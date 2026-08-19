@@ -23,7 +23,7 @@
   let snapshotTimer = null;
 
   window.__JDCHAT_CAPTURE_MAIN_READY__ = {
-    version: "0.2.4",
+    version: "0.2.5",
     networkHooksEnabled: ENABLE_NETWORK_HOOKS,
     receptionChatLogEnabled: ENABLE_RECEPTION_CHATLOG,
     genericNetworkEnabled: ENABLE_GENERIC_NETWORK,
@@ -354,16 +354,30 @@
       customerHash: hashes.customerHash || undefined,
       waiterHash: hashes.waiterHash || undefined,
       serviceHash: hashes.waiterHash || undefined,
+      customerDisplayId: firstNonEmpty(row && row.customer, row && row.customerName, message.customer),
+      waiterDisplayId: firstNonEmpty(row && row.service, row && row.waiter, message.waiter),
+      transferWaiterDisplayId: firstNonEmpty(row && row.transferWaiter),
+      resultTags: receptionResultTags(row),
       mallId: firstNonEmpty(message.mallId, row && row.mallId),
       mallName: row && row.mallName,
       groupId: row && row.groupId,
       groupName: row && row.groupName,
       sessionType: row && row.sessionType,
       sessionTypeDesc: row && row.sessionTypeDesc,
+      consultationType: row && row.sessionTypeDesc,
       consultationDate: row && row.consultationDate,
       allocateTime: row && row.allocateTime,
       goodsName: row && row.goodsName,
       goodsId: row && row.pid,
+      newResponseAvgSeconds: row && row.newResponseAvgSpeed,
+      firstResponseAt: row && row.responseTime,
+      sessionDurationMinutes: row && row.sessionDuration,
+      evaluationSource: row && row.evaluationSource,
+      evaluationTime: row && row.evaluationTime,
+      dissatisfiedReason: firstNonEmpty(row && row.dissatisfiedReason, row && row.unsatisfiedReason),
+      intentPrimary: firstNonEmpty(row && row.intentPrimary, row && row.intentionOne, row && row.intent1),
+      intentSecondary: firstNonEmpty(row && row.intentSecondary, row && row.intentionTwo, row && row.intent2),
+      scene: row && row.scene,
     };
   }
 
@@ -383,7 +397,49 @@
       width: firstNonEmpty(message.width),
       height: firstNonEmpty(message.height),
       lang: firstNonEmpty(message.lang),
+      customerDisplayId: firstNonEmpty(message.customer),
+      waiterDisplayId: firstNonEmpty(message.waiter),
     };
+  }
+
+  function receptionResultTags(row) {
+    if (!row || typeof row !== "object") return undefined;
+    const tags = [];
+    addResultTag(tags, row.resultTags || row.resultLabel || row.resultLabels);
+    if (truthyFlag(row.reply30s)) addResultTag(tags, "30秒内未回复");
+    if (row.promoteOrder !== undefined && row.promoteOrder !== null && row.promoteOrder !== "") {
+      const text = String(row.promoteOrder);
+      addResultTag(tags, text.includes("下单") ? text : truthyFlag(row.promoteOrder) ? "已下单" : "未下单");
+    }
+    if (truthyFlag(row.repeatIn24h)) addResultTag(tags, "24小时重复进线");
+    if (truthyFlag(row.transferStatus)) addResultTag(tags, "24h转平台");
+    addResultTag(tags, row.evaluation);
+    addResultTag(tags, row.solveOption);
+    return tags.length ? tags.join("、") : undefined;
+  }
+
+  function addResultTag(tags, value) {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach((item) => addResultTag(tags, item));
+      return;
+    }
+    String(value)
+      .replace(/[,|]/g, "、")
+      .split("、")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .forEach((item) => {
+        if (!tags.includes(item)) tags.push(item);
+      });
+  }
+
+  function truthyFlag(value) {
+    if (value === true) return true;
+    if (typeof value === "number") return value !== 0;
+    if (typeof value !== "string") return Boolean(value);
+    const normalized = value.trim().toLowerCase();
+    return !["", "0", "false", "no", "n", "null", "undefined", "否"].includes(normalized);
   }
 
   function extractChatMessages(value, out = [], depth = 0, path = "$") {

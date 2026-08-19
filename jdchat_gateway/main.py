@@ -16,6 +16,11 @@ from jdchat_gateway.reception import (
     ReceptionCaptureRejected,
     ReceptionCaptureResponse,
     ReceptionChatLogBatchIn,
+    count_reception_chatlog_customers,
+    count_reception_chatlog_sessions,
+    list_reception_chatlog_customer_messages,
+    list_reception_chatlog_customers,
+    list_reception_chatlog_events_recent,
     list_reception_chatlog_messages,
     list_reception_chatlog_sessions,
     normalize_reception_chatlog_event,
@@ -26,6 +31,7 @@ from jdchat_gateway.reception import (
 )
 from jdchat_gateway.repositories import (
     capture_stats,
+    count_conversations,
     list_capture_events_recent,
     list_conversations,
     list_messages,
@@ -205,12 +211,19 @@ def register_routes(app: FastAPI) -> FastAPI:
     def conversations(
         settings: Annotated[Settings, Depends(get_settings)],
         limit: int = 50,
+        offset: int = 0,
         q: str | None = None,
         source: str | None = None,
     ) -> dict[str, object]:
+        bounded_limit = min(max(limit, 1), 200)
+        bounded_offset = max(offset, 0)
         conn = connect(settings.database_path)
         try:
-            return {"items": list_conversations(conn, min(max(limit, 1), 200), q=q, source=source)}
+            total = count_conversations(conn, q=q, source=source)
+            return {
+                "items": list_conversations(conn, bounded_limit, offset=bounded_offset, q=q, source=source),
+                "pagination": pagination_meta(limit=bounded_limit, offset=bounded_offset, total=total),
+            }
         finally:
             conn.close()
 
@@ -242,11 +255,50 @@ def register_routes(app: FastAPI) -> FastAPI:
     def reception_chatlog_sessions(
         settings: Annotated[Settings, Depends(get_settings)],
         limit: int = 50,
+        offset: int = 0,
         q: str | None = None,
+        source: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        customer: str | None = None,
+        waiter: str | None = None,
+        goods_id: str | None = None,
+        keyword: str | None = None,
+        result_tag: str | None = None,
     ) -> dict[str, object]:
+        bounded_limit = min(max(limit, 1), 200)
+        bounded_offset = max(offset, 0)
         conn = connect(settings.database_path)
         try:
-            return {"items": list_reception_chatlog_sessions(conn, min(max(limit, 1), 200), q=q)}
+            total = count_reception_chatlog_sessions(
+                conn,
+                q=q,
+                source=source,
+                date_from=date_from,
+                date_to=date_to,
+                customer=customer,
+                waiter=waiter,
+                goods_id=goods_id,
+                keyword=keyword,
+                result_tag=result_tag,
+            )
+            return {
+                "items": list_reception_chatlog_sessions(
+                    conn,
+                    bounded_limit,
+                    offset=bounded_offset,
+                    q=q,
+                    source=source,
+                    date_from=date_from,
+                    date_to=date_to,
+                    customer=customer,
+                    waiter=waiter,
+                    goods_id=goods_id,
+                    keyword=keyword,
+                    result_tag=result_tag,
+                ),
+                "pagination": pagination_meta(limit=bounded_limit, offset=bounded_offset, total=total),
+            }
         finally:
             conn.close()
 
@@ -261,14 +313,71 @@ def register_routes(app: FastAPI) -> FastAPI:
         normalized_order = "asc" if order == "asc" else "desc"
         conn = connect(settings.database_path)
         try:
+            items = list_reception_chatlog_messages(
+                conn,
+                conversation_key,
+                min(max(limit, 1), 500),
+                order=normalized_order,
+                before=before,
+            )
             return {
-                "items": list_reception_chatlog_messages(
+                "items": [with_media_public_url(item, settings) for item in items],
+            }
+        finally:
+            conn.close()
+
+    @app.get("/reception/chatlog/customers", dependencies=[Depends(require_local_token)])
+    def reception_chatlog_customers(
+        settings: Annotated[Settings, Depends(get_settings)],
+        limit: int = 50,
+        offset: int = 0,
+        q: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> dict[str, object]:
+        bounded_limit = min(max(limit, 1), 200)
+        bounded_offset = max(offset, 0)
+        conn = connect(settings.database_path)
+        try:
+            total = count_reception_chatlog_customers(conn, q=q, date_from=date_from, date_to=date_to)
+            return {
+                "items": list_reception_chatlog_customers(
                     conn,
-                    conversation_key,
-                    min(max(limit, 1), 500),
-                    order=normalized_order,
-                    before=before,
-                )
+                    bounded_limit,
+                    offset=bounded_offset,
+                    q=q,
+                    date_from=date_from,
+                    date_to=date_to,
+                ),
+                "pagination": pagination_meta(limit=bounded_limit, offset=bounded_offset, total=total),
+            }
+        finally:
+            conn.close()
+
+    @app.get("/reception/chatlog/customers/{customer_hash}/messages", dependencies=[Depends(require_local_token)])
+    def reception_chatlog_customer_messages(
+        customer_hash: str,
+        settings: Annotated[Settings, Depends(get_settings)],
+        limit: int = 1000,
+        order: str = "asc",
+        date_from: str | None = None,
+        date_to: str | None = None,
+        keyword: str | None = None,
+    ) -> dict[str, object]:
+        normalized_order = "asc" if order == "asc" else "desc"
+        conn = connect(settings.database_path)
+        try:
+            items = list_reception_chatlog_customer_messages(
+                conn,
+                customer_hash,
+                min(max(limit, 1), 2000),
+                order=normalized_order,
+                date_from=date_from,
+                date_to=date_to,
+                keyword=keyword,
+            )
+            return {
+                "items": [with_media_public_url(item, settings) for item in items],
             }
         finally:
             conn.close()
@@ -278,6 +387,17 @@ def register_routes(app: FastAPI) -> FastAPI:
         conn = connect(settings.database_path)
         try:
             return reception_chatlog_stats(conn)
+        finally:
+            conn.close()
+
+    @app.get("/reception/chatlog/events/recent", dependencies=[Depends(require_local_token)])
+    def recent_reception_chatlog_events(
+        settings: Annotated[Settings, Depends(get_settings)],
+        limit: int = 20,
+    ) -> dict[str, object]:
+        conn = connect(settings.database_path)
+        try:
+            return {"items": list_reception_chatlog_events_recent(conn, min(max(limit, 1), 200))}
         finally:
             conn.close()
 
@@ -301,6 +421,19 @@ def register_routes(app: FastAPI) -> FastAPI:
             conn.close()
 
     return app
+
+
+def pagination_meta(*, limit: int, offset: int, total: int) -> dict[str, object]:
+    next_offset = offset + limit
+    previous_offset = max(offset - limit, 0)
+    return {
+        "limit": limit,
+        "offset": offset,
+        "total": total,
+        "has_more": next_offset < total,
+        "next_offset": next_offset if next_offset < total else None,
+        "previous_offset": previous_offset if offset > 0 else None,
+    }
 
 
 def with_media_public_url(item: dict[str, object], settings: Settings) -> dict[str, object]:

@@ -111,12 +111,26 @@ CREATE TABLE IF NOT EXISTS reception_chatlog_sessions (
   group_name TEXT,
   customer_hash TEXT,
   waiter_hash TEXT,
+  customer_display_id TEXT,
+  waiter_display_id TEXT,
+  transfer_waiter_display_id TEXT,
+  result_tags TEXT,
   session_type TEXT,
   session_type_desc TEXT,
+  consultation_type TEXT,
   consultation_at TEXT,
   allocate_at TEXT,
   goods_id TEXT,
   goods_name TEXT,
+  new_response_avg_seconds REAL,
+  first_response_at TEXT,
+  session_duration_minutes REAL,
+  evaluation_source TEXT,
+  evaluation_at TEXT,
+  dissatisfied_reason TEXT,
+  intent_primary TEXT,
+  intent_secondary TEXT,
+  scene TEXT,
   last_msg_id TEXT,
   last_mid TEXT,
   last_message_at TEXT,
@@ -150,6 +164,8 @@ CREATE TABLE IF NOT EXISTS reception_chatlog_messages (
   lang TEXT,
   from_hash TEXT,
   to_hash TEXT,
+  from_display_id TEXT,
+  to_display_id TEXT,
   source TEXT NOT NULL,
   raw_json TEXT,
   captured_at TEXT NOT NULL,
@@ -207,18 +223,57 @@ def connect(database_path: str | Path) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     ensure_messages_media_columns(conn)
+    ensure_reception_chatlog_columns(conn)
     conn.commit()
 
 
 def ensure_messages_media_columns(conn: sqlite3.Connection) -> None:
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
-    additions = {
-        "media_local_path": "TEXT",
-        "media_mime_type": "TEXT",
-        "media_storage_provider": "TEXT",
-        "media_download_status": "TEXT",
-        "media_download_error": "TEXT",
-    }
+    ensure_columns(
+        conn,
+        "messages",
+        {
+            "media_local_path": "TEXT",
+            "media_mime_type": "TEXT",
+            "media_storage_provider": "TEXT",
+            "media_download_status": "TEXT",
+            "media_download_error": "TEXT",
+        },
+    )
+
+
+def ensure_reception_chatlog_columns(conn: sqlite3.Connection) -> None:
+    ensure_columns(
+        conn,
+        "reception_chatlog_sessions",
+        {
+            "customer_display_id": "TEXT",
+            "waiter_display_id": "TEXT",
+            "transfer_waiter_display_id": "TEXT",
+            "result_tags": "TEXT",
+            "consultation_type": "TEXT",
+            "new_response_avg_seconds": "REAL",
+            "first_response_at": "TEXT",
+            "session_duration_minutes": "REAL",
+            "evaluation_source": "TEXT",
+            "evaluation_at": "TEXT",
+            "dissatisfied_reason": "TEXT",
+            "intent_primary": "TEXT",
+            "intent_secondary": "TEXT",
+            "scene": "TEXT",
+        },
+    )
+    ensure_columns(
+        conn,
+        "reception_chatlog_messages",
+        {
+            "from_display_id": "TEXT",
+            "to_display_id": "TEXT",
+        },
+    )
+
+
+def ensure_columns(conn: sqlite3.Connection, table: str, additions: dict[str, str]) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     for name, definition in additions.items():
         if name not in columns:
-            conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")

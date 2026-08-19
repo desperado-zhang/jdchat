@@ -215,6 +215,42 @@ def test_conversation_filters_and_message_order(tmp_path) -> None:
     assert "template_payload" in messages.json()["items"][0]
 
 
+def test_conversation_list_returns_pagination_metadata(tmp_path) -> None:
+    db_path = tmp_path / "jdchat.sqlite3"
+    app = create_app(Settings(database_path=db_path))
+    first = make_event("evt-page-first", msg_id="msg-page-first")
+    first["conversation"]["customerName"] = "First"
+    second = make_event("evt-page-second", msg_id="msg-page-second")
+    second["conversation"]["customerName"] = "Second"
+    second["conversation"]["customerPin"] = "second-customer-pin"
+    second["message"]["from"]["pin"] = "second-customer-pin"
+
+    with TestClient(app) as client:
+        capture = client.post("/capture/events", json={"events": [first, second]})
+        first_page = client.get("/conversations?limit=1&offset=0")
+        second_page = client.get("/conversations?limit=1&offset=1")
+
+    assert capture.status_code == 200
+    assert first_page.status_code == 200
+    assert second_page.status_code == 200
+    assert first_page.json()["pagination"] == {
+        "limit": 1,
+        "offset": 0,
+        "total": 2,
+        "has_more": True,
+        "next_offset": 1,
+        "previous_offset": None,
+    }
+    assert second_page.json()["pagination"] == {
+        "limit": 1,
+        "offset": 1,
+        "total": 2,
+        "has_more": False,
+        "next_offset": None,
+        "previous_offset": 0,
+    }
+
+
 def test_session_and_dom_messages_with_same_customer_snapshot_share_conversation(tmp_path) -> None:
     db_path = tmp_path / "jdchat.sqlite3"
     app = create_app(Settings(database_path=db_path))

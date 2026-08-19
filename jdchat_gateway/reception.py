@@ -92,6 +92,15 @@ def to_int(value: Any) -> int | None:
         return None
 
 
+def to_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def compact_json(value: Any) -> str | None:
     if value is None:
         return None
@@ -156,6 +165,53 @@ def boolish(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y"}
     return False
+
+
+def text_or_none(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def add_tag(tags: list[str], value: Any) -> None:
+    if value in (None, "", False):
+        return
+    if isinstance(value, list | tuple | set):
+        for item in value:
+            add_tag(tags, item)
+        return
+    text = str(value).strip()
+    if not text:
+        return
+    for part in text.replace(",", "、").replace("|", "、").split("、"):
+        part = part.strip()
+        if part and part not in tags:
+            tags.append(part)
+
+
+def normalize_result_tags(conversation: dict[str, Any]) -> str | None:
+    tags: list[str] = []
+    add_tag(tags, pick(conversation, "result_tags", "resultTags", "resultLabel", "resultLabels"))
+
+    if boolish(pick(conversation, "reply30s", "reply_30s")):
+        add_tag(tags, "30秒内未回复")
+
+    promote_order = pick(conversation, "promoteOrder", "promote_order", "orderTag", "orderStatus")
+    if promote_order not in (None, ""):
+        promote_text = str(promote_order)
+        if "下单" in promote_text:
+            add_tag(tags, promote_text)
+        else:
+            add_tag(tags, "已下单" if boolish(promote_order) else "未下单")
+
+    if boolish(pick(conversation, "repeatIn24h", "repeat_in_24h")):
+        add_tag(tags, "24小时重复进线")
+    if boolish(pick(conversation, "transferStatus", "transfer_status")):
+        add_tag(tags, "24h转平台")
+
+    add_tag(tags, pick(conversation, "evaluation"))
+    add_tag(tags, pick(conversation, "solveOption", "solve_option"))
+    return "、".join(tags) if tags else None
 
 
 def event_message(event: dict[str, Any]) -> dict[str, Any] | None:
@@ -245,6 +301,50 @@ def normalize_reception_session(
     mall_name = pick(conversation, "mall_name", "mallName", "vender_name", "venderName")
     session_type = pick(conversation, "session_type", "sessionType")
     session_type_desc = pick(conversation, "session_type_desc", "sessionTypeDesc")
+    consultation_type = pick(conversation, "consultation_type", "consultationType") or session_type_desc
+    customer_identity = (
+        pick(conversation, "customer", "customerName", "customerDisplayId", "customer_display_id", "customerPin")
+        or pick(message, "customer", "customerDisplayId", "customer_display_id")
+    )
+    waiter_identity = (
+        pick(conversation, "service", "waiter", "waiterName", "waiterDisplayId", "waiter_display_id")
+        or pick(message, "waiter", "waiterDisplayId", "waiter_display_id")
+    )
+    customer_display_id = text_or_none(
+        pick(
+            conversation,
+            "customer_display_id",
+            "customerDisplayId",
+            "customer",
+            "customerName",
+            "customerPin",
+            "buyerNick",
+        )
+        or pick(message, "customer_display_id", "customerDisplayId", "customer")
+    )
+    waiter_display_id = text_or_none(
+        pick(
+            conversation,
+            "waiter_display_id",
+            "waiterDisplayId",
+            "service",
+            "waiter",
+            "waiterName",
+            "serviceName",
+        )
+        or pick(message, "waiter_display_id", "waiterDisplayId", "waiter")
+    )
+    transfer_waiter_display_id = text_or_none(
+        pick(
+            conversation,
+            "transfer_waiter_display_id",
+            "transferWaiterDisplayId",
+            "transferWaiter",
+            "transfer_waiter",
+        )
+    )
+    customer_hash = customer_hash or hash_identifier(customer_identity)
+    waiter_hash = waiter_hash or hash_identifier(waiter_identity)
 
     conversation_key = pick(conversation, "conversation_key", "conversationKey")
     if not conversation_key:
@@ -265,12 +365,38 @@ def normalize_reception_session(
         "group_name": pick(conversation, "group_name", "groupName"),
         "customer_hash": customer_hash,
         "waiter_hash": waiter_hash,
+        "customer_display_id": customer_display_id,
+        "waiter_display_id": waiter_display_id,
+        "transfer_waiter_display_id": transfer_waiter_display_id,
+        "result_tags": normalize_result_tags(conversation),
         "session_type": str(session_type) if session_type is not None else None,
         "session_type_desc": str(session_type_desc) if session_type_desc is not None else None,
+        "consultation_type": str(consultation_type) if consultation_type is not None else None,
         "consultation_at": parse_reception_time(pick(conversation, "consultationDate", "consultation_at")),
         "allocate_at": parse_reception_time(pick(conversation, "allocateTime", "allocate_at")),
         "goods_id": pick(conversation, "goods_id", "goodsId", "pid"),
         "goods_name": pick(conversation, "goods_name", "goodsName"),
+        "new_response_avg_seconds": to_float(
+            pick(conversation, "new_response_avg_seconds", "newResponseAvgSeconds", "newResponseAvgSpeed")
+        ),
+        "first_response_at": parse_reception_time(
+            pick(conversation, "firstResponseAt", "first_response_at", "responseTime")
+        ),
+        "session_duration_minutes": to_float(
+            pick(conversation, "sessionDurationMinutes", "session_duration_minutes", "sessionDuration")
+        ),
+        "evaluation_source": text_or_none(pick(conversation, "evaluationSource", "evaluation_source")),
+        "evaluation_at": parse_reception_time(pick(conversation, "evaluationTime", "evaluation_at")),
+        "dissatisfied_reason": text_or_none(
+            pick(conversation, "dissatisfiedReason", "dissatisfied_reason", "unsatisfiedReason")
+        ),
+        "intent_primary": text_or_none(
+            pick(conversation, "intentPrimary", "intent_primary", "intent1", "intentionOne")
+        ),
+        "intent_secondary": text_or_none(
+            pick(conversation, "intentSecondary", "intent_secondary", "intent2", "intentionTwo")
+        ),
+        "scene": text_or_none(pick(conversation, "scene")),
         "raw_session": compact_json(redact_sensitive(raw_session)),
         "captured_at": pick(event, "captured_at", "capturedAt") or now_iso(),
     }
@@ -310,16 +436,28 @@ def normalize_reception_message(
     message_at = parse_reception_time(pick(message, "created", "messageAt", "message_at", "time"))
     customer_hash = (
         pick(event.get("conversation") or {}, "customer_hash", "customerHash", "customer_pin_hash", "customerPinHash")
-        or hash_identifier(pick(message, "customer"))
+        or hash_identifier(pick(message, "customer", "customerDisplayId", "customer_display_id"))
         or session.get("customer_hash")
     )
     waiter_hash = (
         pick(event.get("conversation") or {}, "waiter_hash", "waiterHash", "service_hash", "serviceHash")
-        or hash_identifier(pick(message, "waiter"))
+        or hash_identifier(pick(message, "waiter", "waiterDisplayId", "waiter_display_id"))
         or session.get("waiter_hash")
     )
     from_hash = waiter_hash if waiter_send else customer_hash
     to_hash = customer_hash if waiter_send else waiter_hash
+    customer_display_id = text_or_none(
+        pick(message, "customer_display_id", "customerDisplayId", "customer")
+        or pick(event.get("conversation") or {}, "customer_display_id", "customerDisplayId", "customer")
+        or session.get("customer_display_id")
+    )
+    waiter_display_id = text_or_none(
+        pick(message, "waiter_display_id", "waiterDisplayId", "waiter")
+        or pick(event.get("conversation") or {}, "waiter_display_id", "waiterDisplayId", "service", "waiter")
+        or session.get("waiter_display_id")
+    )
+    from_display_id = waiter_display_id if waiter_send else customer_display_id
+    to_display_id = customer_display_id if waiter_send else waiter_display_id
     msg_content_hash = content_hash(content)
     local_id = pick(message, "sidHash", "localId", "local_id") or (hash_identifier(str(sid)) if sid else None)
     dedupe_key = reception_dedupe_key(
@@ -353,6 +491,8 @@ def normalize_reception_message(
         "lang": pick(message, "lang"),
         "from_hash": from_hash,
         "to_hash": to_hash,
+        "from_display_id": from_display_id,
+        "to_display_id": to_display_id,
         "source": event["source"],
         "raw_json": compact_json(redact_sensitive(message)),
         "captured_at": pick(event, "captured_at", "capturedAt") or now_iso(),
@@ -405,14 +545,22 @@ def upsert_reception_chatlog_session(
         """
         INSERT INTO reception_chatlog_sessions (
           platform, conversation_key, cid_hash, mall_id, mall_name, group_id, group_name,
-          customer_hash, waiter_hash, session_type, session_type_desc, consultation_at,
-          allocate_at, goods_id, goods_name, last_msg_id, last_mid, last_message_at,
-          raw_session, captured_at
+          customer_hash, waiter_hash, customer_display_id, waiter_display_id,
+          transfer_waiter_display_id, result_tags, session_type, session_type_desc,
+          consultation_type, consultation_at, allocate_at, goods_id, goods_name,
+          new_response_avg_seconds, first_response_at, session_duration_minutes,
+          evaluation_source, evaluation_at, dissatisfied_reason, intent_primary,
+          intent_secondary, scene, last_msg_id, last_mid, last_message_at, raw_session,
+          captured_at
         )
         VALUES (
           :platform, :conversation_key, :cid_hash, :mall_id, :mall_name, :group_id, :group_name,
-          :customer_hash, :waiter_hash, :session_type, :session_type_desc, :consultation_at,
-          :allocate_at, :goods_id, :goods_name, :last_msg_id, :last_mid, :last_message_at,
+          :customer_hash, :waiter_hash, :customer_display_id, :waiter_display_id,
+          :transfer_waiter_display_id, :result_tags, :session_type, :session_type_desc,
+          :consultation_type, :consultation_at, :allocate_at, :goods_id, :goods_name,
+          :new_response_avg_seconds, :first_response_at, :session_duration_minutes,
+          :evaluation_source, :evaluation_at, :dissatisfied_reason, :intent_primary,
+          :intent_secondary, :scene, :last_msg_id, :last_mid, :last_message_at,
           :raw_session, :captured_at
         )
         ON CONFLICT(conversation_key) DO UPDATE SET
@@ -423,12 +571,35 @@ def upsert_reception_chatlog_session(
           group_name = COALESCE(excluded.group_name, reception_chatlog_sessions.group_name),
           customer_hash = COALESCE(excluded.customer_hash, reception_chatlog_sessions.customer_hash),
           waiter_hash = COALESCE(excluded.waiter_hash, reception_chatlog_sessions.waiter_hash),
+          customer_display_id = COALESCE(excluded.customer_display_id, reception_chatlog_sessions.customer_display_id),
+          waiter_display_id = COALESCE(excluded.waiter_display_id, reception_chatlog_sessions.waiter_display_id),
+          transfer_waiter_display_id = COALESCE(
+            excluded.transfer_waiter_display_id,
+            reception_chatlog_sessions.transfer_waiter_display_id
+          ),
+          result_tags = COALESCE(excluded.result_tags, reception_chatlog_sessions.result_tags),
           session_type = COALESCE(excluded.session_type, reception_chatlog_sessions.session_type),
           session_type_desc = COALESCE(excluded.session_type_desc, reception_chatlog_sessions.session_type_desc),
+          consultation_type = COALESCE(excluded.consultation_type, reception_chatlog_sessions.consultation_type),
           consultation_at = COALESCE(excluded.consultation_at, reception_chatlog_sessions.consultation_at),
           allocate_at = COALESCE(excluded.allocate_at, reception_chatlog_sessions.allocate_at),
           goods_id = COALESCE(excluded.goods_id, reception_chatlog_sessions.goods_id),
           goods_name = COALESCE(excluded.goods_name, reception_chatlog_sessions.goods_name),
+          new_response_avg_seconds = COALESCE(
+            excluded.new_response_avg_seconds,
+            reception_chatlog_sessions.new_response_avg_seconds
+          ),
+          first_response_at = COALESCE(excluded.first_response_at, reception_chatlog_sessions.first_response_at),
+          session_duration_minutes = COALESCE(
+            excluded.session_duration_minutes,
+            reception_chatlog_sessions.session_duration_minutes
+          ),
+          evaluation_source = COALESCE(excluded.evaluation_source, reception_chatlog_sessions.evaluation_source),
+          evaluation_at = COALESCE(excluded.evaluation_at, reception_chatlog_sessions.evaluation_at),
+          dissatisfied_reason = COALESCE(excluded.dissatisfied_reason, reception_chatlog_sessions.dissatisfied_reason),
+          intent_primary = COALESCE(excluded.intent_primary, reception_chatlog_sessions.intent_primary),
+          intent_secondary = COALESCE(excluded.intent_secondary, reception_chatlog_sessions.intent_secondary),
+          scene = COALESCE(excluded.scene, reception_chatlog_sessions.scene),
           last_msg_id = COALESCE(excluded.last_msg_id, reception_chatlog_sessions.last_msg_id),
           last_mid = COALESCE(excluded.last_mid, reception_chatlog_sessions.last_mid),
           last_message_at = COALESCE(excluded.last_message_at, reception_chatlog_sessions.last_message_at),
@@ -458,12 +629,12 @@ def upsert_reception_chatlog_message(conn: sqlite3.Connection, message: dict[str
         INSERT INTO reception_chatlog_messages (
           dedupe_key, conversation_key, msg_id, mid, local_id, direction, body_type, content,
           content_hash, media_url, media_width, media_height, message_at, lang, from_hash,
-          to_hash, source, raw_json, captured_at
+          to_hash, from_display_id, to_display_id, source, raw_json, captured_at
         )
         VALUES (
           :dedupe_key, :conversation_key, :msg_id, :mid, :local_id, :direction, :body_type, :content,
           :content_hash, :media_url, :media_width, :media_height, :message_at, :lang, :from_hash,
-          :to_hash, :source, :raw_json, :captured_at
+          :to_hash, :from_display_id, :to_display_id, :source, :raw_json, :captured_at
         )
         """,
         message,
@@ -497,45 +668,195 @@ def list_reception_chatlog_sessions(
     conn: sqlite3.Connection,
     limit: int,
     *,
+    offset: int = 0,
     q: str | None = None,
+    source: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    customer: str | None = None,
+    waiter: str | None = None,
+    goods_id: str | None = None,
+    keyword: str | None = None,
+    result_tag: str | None = None,
 ) -> list[dict[str, Any]]:
-    conditions: list[str] = []
-    params: list[Any] = []
-    if q:
-        like = f"%{q.strip()}%"
-        conditions.append(
-            """
-            (
-              conversation_key LIKE ?
-              OR cid_hash LIKE ?
-              OR mall_id LIKE ?
-              OR mall_name LIKE ?
-              OR customer_hash LIKE ?
-              OR waiter_hash LIKE ?
-              OR goods_id LIKE ?
-              OR goods_name LIKE ?
-            )
-            """
-        )
-        params.extend([like] * 8)
-
-    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    where_sql, params = reception_chatlog_session_filters(
+        q=q,
+        source=source,
+        date_from=date_from,
+        date_to=date_to,
+        customer=customer,
+        waiter=waiter,
+        goods_id=goods_id,
+        keyword=keyword,
+        result_tag=result_tag,
+    )
     rows = conn.execute(
         f"""
         SELECT s.conversation_key, s.cid_hash, s.mall_id, s.mall_name, s.group_id, s.group_name,
                s.customer_hash, s.waiter_hash, s.session_type, s.session_type_desc,
-               s.goods_id, s.goods_name, s.last_msg_id, s.last_mid, s.last_message_at,
-               s.updated_at, COUNT(m.id) AS message_count, MAX(m.captured_at) AS last_captured_at
+               s.customer_display_id, s.waiter_display_id, s.transfer_waiter_display_id,
+               s.result_tags, s.consultation_type, s.consultation_at, s.allocate_at,
+               s.goods_id, s.goods_name, s.new_response_avg_seconds, s.first_response_at,
+               s.session_duration_minutes, s.evaluation_source, s.evaluation_at,
+               s.dissatisfied_reason, s.intent_primary, s.intent_secondary, s.scene,
+               s.last_msg_id, s.last_mid, s.last_message_at,
+               s.updated_at, COUNT(m.id) AS message_count, MAX(m.captured_at) AS last_captured_at,
+               SUM(CASE WHEN m.direction = 'customer_or_external' THEN 1 ELSE 0 END) AS customer_message_count,
+               SUM(CASE WHEN m.direction = 'seller_or_waiter' THEN 1 ELSE 0 END) AS waiter_message_count,
+               GROUP_CONCAT(DISTINCT m.source) AS sources
         FROM reception_chatlog_sessions s
         LEFT JOIN reception_chatlog_messages m ON m.conversation_key = s.conversation_key
         {where_sql}
         GROUP BY s.conversation_key
         ORDER BY COALESCE(s.last_message_at, MAX(m.captured_at), s.updated_at) DESC
         LIMIT ?
+        OFFSET ?
         """,
-        (*params, limit),
+        (*params, limit, offset),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def count_reception_chatlog_sessions(
+    conn: sqlite3.Connection,
+    *,
+    q: str | None = None,
+    source: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    customer: str | None = None,
+    waiter: str | None = None,
+    goods_id: str | None = None,
+    keyword: str | None = None,
+    result_tag: str | None = None,
+) -> int:
+    where_sql, params = reception_chatlog_session_filters(
+        q=q,
+        source=source,
+        date_from=date_from,
+        date_to=date_to,
+        customer=customer,
+        waiter=waiter,
+        goods_id=goods_id,
+        keyword=keyword,
+        result_tag=result_tag,
+    )
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS total
+        FROM reception_chatlog_sessions s
+        {where_sql}
+        """,
+        params,
+    ).fetchone()
+    return int(row["total"] if row else 0)
+
+
+def reception_chatlog_session_filters(
+    *,
+    q: str | None = None,
+    source: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    customer: str | None = None,
+    waiter: str | None = None,
+    goods_id: str | None = None,
+    keyword: str | None = None,
+    result_tag: str | None = None,
+) -> tuple[str, list[Any]]:
+    conditions: list[str] = []
+    params: list[Any] = []
+    session_time = "COALESCE(s.consultation_at, s.last_message_at, s.captured_at)"
+    if q:
+        like = f"%{q.strip()}%"
+        conditions.append(
+            """
+            (
+              s.conversation_key LIKE ?
+              OR s.cid_hash LIKE ?
+              OR s.mall_id LIKE ?
+              OR s.mall_name LIKE ?
+              OR s.customer_display_id LIKE ?
+              OR s.waiter_display_id LIKE ?
+              OR s.transfer_waiter_display_id LIKE ?
+              OR s.customer_hash LIKE ?
+              OR s.waiter_hash LIKE ?
+              OR s.goods_id LIKE ?
+              OR s.goods_name LIKE ?
+              OR s.group_name LIKE ?
+              OR s.result_tags LIKE ?
+            )
+            """
+        )
+        params.extend([like] * 13)
+
+    if date_from:
+        conditions.append(f"date({session_time}, '+8 hours') >= date(?)")
+        params.append(date_from)
+    if date_to:
+        conditions.append(f"date({session_time}, '+8 hours') <= date(?)")
+        params.append(date_to)
+
+    if customer:
+        like = f"%{customer.strip()}%"
+        conditions.append("(s.customer_display_id LIKE ? OR s.customer_hash LIKE ?)")
+        params.extend([like, like])
+
+    if waiter:
+        like = f"%{waiter.strip()}%"
+        conditions.append(
+            """
+            (
+              s.waiter_display_id LIKE ?
+              OR s.transfer_waiter_display_id LIKE ?
+              OR s.waiter_hash LIKE ?
+            )
+            """
+        )
+        params.extend([like, like, like])
+
+    if goods_id:
+        like = f"%{goods_id.strip()}%"
+        conditions.append("s.goods_id LIKE ?")
+        params.append(like)
+
+    if result_tag:
+        like = f"%{result_tag.strip()}%"
+        conditions.append("s.result_tags LIKE ?")
+        params.append(like)
+
+    if keyword:
+        like = f"%{keyword.strip()}%"
+        conditions.append(
+            """
+            (
+              s.goods_name LIKE ?
+              OR EXISTS (
+                SELECT 1
+                FROM reception_chatlog_messages keyword_messages
+                WHERE keyword_messages.conversation_key = s.conversation_key
+                  AND keyword_messages.content LIKE ?
+              )
+            )
+            """
+        )
+        params.extend([like, like])
+
+    if source:
+        conditions.append(
+            """
+            EXISTS (
+              SELECT 1
+              FROM reception_chatlog_messages source_messages
+              WHERE source_messages.conversation_key = s.conversation_key
+                AND instr(',' || source_messages.source || ',', ',' || ? || ',') > 0
+            )
+            """
+        )
+        params.append(source)
+
+    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    return where_sql, params
 
 
 def list_reception_chatlog_messages(
@@ -557,10 +878,149 @@ def list_reception_chatlog_messages(
     rows = conn.execute(
         f"""
         SELECT dedupe_key, msg_id, mid, local_id, direction, body_type, content, content_hash,
-               media_url, media_width, media_height, message_at, lang, source, captured_at, updated_at
+               media_url, media_width, media_height, message_at, lang, from_display_id,
+               to_display_id, source, captured_at, updated_at
         FROM reception_chatlog_messages
         WHERE {" AND ".join(conditions)}
         ORDER BY COALESCE(message_at, captured_at) {order_sql}, id {id_order_sql}
+        LIMIT ?
+        """,
+        (*params, limit),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_reception_chatlog_customers(
+    conn: sqlite3.Connection,
+    limit: int,
+    *,
+    offset: int = 0,
+    q: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict[str, Any]]:
+    where_sql, params = reception_chatlog_customer_filters(q=q, date_from=date_from, date_to=date_to)
+    rows = conn.execute(
+        f"""
+        SELECT s.customer_hash,
+               COALESCE(MAX(s.customer_display_id), substr(s.customer_hash, 1, 12)) AS customer_display_id,
+               COUNT(DISTINCT s.conversation_key) AS session_count,
+               COUNT(m.id) AS message_count,
+               MIN(COALESCE(s.consultation_at, s.last_message_at, s.captured_at)) AS first_session_at,
+               MAX(COALESCE(s.consultation_at, s.last_message_at, s.captured_at)) AS last_session_at,
+               GROUP_CONCAT(DISTINCT s.group_name) AS group_names,
+               GROUP_CONCAT(DISTINCT s.waiter_display_id) AS waiter_display_ids
+        FROM reception_chatlog_sessions s
+        LEFT JOIN reception_chatlog_messages m ON m.conversation_key = s.conversation_key
+        {where_sql}
+        GROUP BY s.customer_hash
+        ORDER BY MAX(COALESCE(s.last_message_at, s.consultation_at, s.captured_at)) DESC
+        LIMIT ?
+        OFFSET ?
+        """,
+        (*params, limit, offset),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def count_reception_chatlog_customers(
+    conn: sqlite3.Connection,
+    *,
+    q: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> int:
+    where_sql, params = reception_chatlog_customer_filters(q=q, date_from=date_from, date_to=date_to)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS total
+        FROM (
+          SELECT s.customer_hash
+          FROM reception_chatlog_sessions s
+          {where_sql}
+          GROUP BY s.customer_hash
+        ) grouped_customers
+        """,
+        params,
+    ).fetchone()
+    return int(row["total"] if row else 0)
+
+
+def reception_chatlog_customer_filters(
+    *,
+    q: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> tuple[str, list[Any]]:
+    conditions: list[str] = ["s.customer_hash IS NOT NULL"]
+    params: list[Any] = []
+    session_time = "COALESCE(s.consultation_at, s.last_message_at, s.captured_at)"
+
+    if q:
+        like = f"%{q.strip()}%"
+        conditions.append(
+            """
+            (
+              s.customer_display_id LIKE ?
+              OR s.customer_hash LIKE ?
+              OR s.group_name LIKE ?
+              OR s.goods_name LIKE ?
+              OR s.waiter_display_id LIKE ?
+            )
+            """
+        )
+        params.extend([like] * 5)
+    if date_from:
+        conditions.append(f"date({session_time}, '+8 hours') >= date(?)")
+        params.append(date_from)
+    if date_to:
+        conditions.append(f"date({session_time}, '+8 hours') <= date(?)")
+        params.append(date_to)
+
+    return f"WHERE {' AND '.join(conditions)}", params
+
+
+def list_reception_chatlog_customer_messages(
+    conn: sqlite3.Connection,
+    customer_hash: str,
+    limit: int,
+    *,
+    order: str = "asc",
+    date_from: str | None = None,
+    date_to: str | None = None,
+    keyword: str | None = None,
+) -> list[dict[str, Any]]:
+    order_sql = "ASC" if order == "asc" else "DESC"
+    conditions = ["s.customer_hash = ?"]
+    params: list[Any] = [customer_hash]
+    session_time = "COALESCE(s.consultation_at, s.last_message_at, s.captured_at)"
+
+    if date_from:
+        conditions.append(f"date({session_time}, '+8 hours') >= date(?)")
+        params.append(date_from)
+    if date_to:
+        conditions.append(f"date({session_time}, '+8 hours') <= date(?)")
+        params.append(date_to)
+    if keyword:
+        like = f"%{keyword.strip()}%"
+        conditions.append("(m.content LIKE ? OR s.goods_name LIKE ?)")
+        params.extend([like, like])
+
+    rows = conn.execute(
+        f"""
+        SELECT m.dedupe_key, m.msg_id, m.mid, m.local_id, m.direction, m.body_type,
+               m.content, m.content_hash, m.media_url, m.media_width, m.media_height,
+               m.message_at, m.lang, m.from_display_id, m.to_display_id, m.source,
+               m.captured_at, m.updated_at, s.conversation_key, s.customer_hash,
+               s.customer_display_id, s.waiter_display_id, s.transfer_waiter_display_id,
+               s.consultation_at, s.consultation_type, s.result_tags, s.group_name,
+               s.goods_id, s.goods_name
+        FROM reception_chatlog_messages m
+        JOIN reception_chatlog_sessions s ON s.conversation_key = m.conversation_key
+        WHERE {" AND ".join(conditions)}
+        ORDER BY COALESCE(s.consultation_at, m.message_at, m.captured_at) {order_sql},
+                 COALESCE(m.message_at, m.captured_at) {order_sql},
+                 m.id {order_sql}
         LIMIT ?
         """,
         (*params, limit),
@@ -585,7 +1045,30 @@ def reception_chatlog_stats(conn: sqlite3.Connection) -> dict[str, Any]:
         LIMIT 1
         """
     ).fetchone()
+    event_sources = conn.execute(
+        """
+        SELECT source, COUNT(*) AS count
+        FROM reception_chatlog_events
+        GROUP BY source
+        ORDER BY count DESC, source
+        """
+    ).fetchall()
     return {
         "totals": dict(totals) if totals else {},
         "latest_message": dict(latest_message) if latest_message else None,
+        "event_sources": [dict(row) for row in event_sources],
     }
+
+
+def list_reception_chatlog_events_recent(conn: sqlite3.Connection, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT event_id, source, event_type, conversation_key, message_dedupe_key,
+               captured_at, received_at
+        FROM reception_chatlog_events
+        ORDER BY received_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]

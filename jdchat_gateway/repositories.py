@@ -252,9 +252,49 @@ def list_conversations(
     conn: sqlite3.Connection,
     limit: int,
     *,
+    offset: int = 0,
     q: str | None = None,
     source: str | None = None,
 ) -> list[dict[str, Any]]:
+    where_sql, params = conversation_filters(q=q, source=source)
+    rows = conn.execute(
+        f"""
+        SELECT c.conversation_key, c.vender_id, c.vender_name, c.customer_app, c.customer_pin_hash,
+               c.customer_name, c.session_type, c.last_msg_id, c.last_mid, c.last_message_at,
+               c.unread_count, c.updated_at, COUNT(m.id) AS message_count,
+               MAX(m.captured_at) AS last_captured_at, GROUP_CONCAT(DISTINCT m.source) AS sources
+        FROM conversations c
+        LEFT JOIN messages m ON m.conversation_key = c.conversation_key
+        {where_sql}
+        GROUP BY c.conversation_key
+        ORDER BY COALESCE(c.last_message_at, MAX(m.captured_at), c.updated_at) DESC
+        LIMIT ?
+        OFFSET ?
+        """,
+        (*params, limit, offset),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def count_conversations(
+    conn: sqlite3.Connection,
+    *,
+    q: str | None = None,
+    source: str | None = None,
+) -> int:
+    where_sql, params = conversation_filters(q=q, source=source)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS total
+        FROM conversations c
+        {where_sql}
+        """,
+        params,
+    ).fetchone()
+    return int(row["total"] if row else 0)
+
+
+def conversation_filters(*, q: str | None = None, source: str | None = None) -> tuple[str, list[Any]]:
     conditions: list[str] = []
     params: list[Any] = []
 
@@ -290,23 +330,7 @@ def list_conversations(
         params.append(source)
 
     where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    rows = conn.execute(
-        f"""
-        SELECT c.conversation_key, c.vender_id, c.vender_name, c.customer_app, c.customer_pin_hash,
-               c.customer_name, c.session_type, c.last_msg_id, c.last_mid, c.last_message_at,
-               c.unread_count, c.updated_at, COUNT(m.id) AS message_count,
-               MAX(m.captured_at) AS last_captured_at, GROUP_CONCAT(DISTINCT m.source) AS sources
-        FROM conversations c
-        LEFT JOIN messages m ON m.conversation_key = c.conversation_key
-        {where_sql}
-        GROUP BY c.conversation_key
-        ORDER BY COALESCE(c.last_message_at, MAX(m.captured_at), c.updated_at) DESC
-        LIMIT ?
-        """
-        ,
-        (*params, limit),
-    ).fetchall()
-    return [dict(row) for row in rows]
+    return where_sql, params
 
 
 def list_messages(
