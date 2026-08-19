@@ -4,18 +4,42 @@
   const SNAPSHOT_INTERVAL_MS = 5000;
   const MAX_MESSAGES_PER_BATCH = 100;
   const MAX_NETWORK_MESSAGES = 50;
-  const ENABLE_NETWORK_HOOKS = window.__JDCHAT_CAPTURE_ENABLE_NETWORK_HOOKS__ === true;
+  const scriptConfig = readScriptConfig();
+  const CAPTURE_SESSION = readFlag("captureSession", true);
+  const ENABLE_NETWORK_HOOKS =
+    readFlag("captureNetwork", false) || window.__JDCHAT_CAPTURE_ENABLE_NETWORK_HOOKS__ === true;
+  const ENABLE_FETCH_HOOK = ENABLE_NETWORK_HOOKS && readFlag("captureFetch", true);
+  const ENABLE_XHR_HOOK = ENABLE_NETWORK_HOOKS && readFlag("captureXhr", true);
+  const ENABLE_WEBSOCKET_HOOK = ENABLE_NETWORK_HOOKS && readFlag("captureWebSocket", false);
 
   let snapshotTimer = null;
 
   window.__JDCHAT_CAPTURE_MAIN_READY__ = {
-    version: "0.1.2",
+    version: "0.1.3",
     networkHooksEnabled: ENABLE_NETWORK_HOOKS,
+    hooks: {
+      fetch: ENABLE_FETCH_HOOK,
+      xhr: ENABLE_XHR_HOOK,
+      websocket: ENABLE_WEBSOCKET_HOOK,
+    },
+    sessionSnapshotsEnabled: CAPTURE_SESSION,
     startedAt: new Date().toISOString(),
   };
 
   if (ENABLE_NETWORK_HOOKS) installPassiveNetworkHooks();
-  scheduleSessionSnapshots();
+  if (CAPTURE_SESSION) scheduleSessionSnapshots();
+
+  function readScriptConfig() {
+    const script = document.currentScript;
+    return script && script.dataset ? script.dataset : {};
+  }
+
+  function readFlag(name, fallback) {
+    const value = scriptConfig[name];
+    if (value === "1" || value === "true") return true;
+    if (value === "0" || value === "false") return false;
+    return fallback;
+  }
 
   function scheduleSessionSnapshots() {
     setTimeout(() => emitSessionSnapshot("initial"), 1500);
@@ -59,27 +83,41 @@
   }
 
   function installPassiveNetworkHooks() {
-    hookWebSocket();
-    hookFetch();
-    hookXhr();
+    if (ENABLE_WEBSOCKET_HOOK) hookWebSocket();
+    if (ENABLE_FETCH_HOOK) hookFetch();
+    if (ENABLE_XHR_HOOK) hookXhr();
   }
 
   function hookWebSocket() {
     const NativeWebSocket = window.WebSocket;
     if (!NativeWebSocket || NativeWebSocket.__jdchatCaptureWrapped) return;
 
-    function WrappedWebSocket(...args) {
-      const socket = new NativeWebSocket(...args);
-      socket.addEventListener("message", (event) => {
-        observeNetworkPayload("websocket", args[0], event.data);
-      });
-      return socket;
-    }
+    const WrappedWebSocket = new Proxy(NativeWebSocket, {
+      construct(target, args) {
+        const socket = Reflect.construct(target, args);
+        attachWebSocketObserver(socket, args[0]);
+        return socket;
+      },
+      apply(target, _thisArg, args) {
+        const socket = Reflect.construct(target, args);
+        attachWebSocketObserver(socket, args[0]);
+        return socket;
+      },
+    });
 
     copyStaticWebSocketFields(WrappedWebSocket, NativeWebSocket);
-    WrappedWebSocket.prototype = NativeWebSocket.prototype;
     WrappedWebSocket.__jdchatCaptureWrapped = true;
     window.WebSocket = WrappedWebSocket;
+  }
+
+  function attachWebSocketObserver(socket, url) {
+    try {
+      socket.addEventListener("message", (event) => {
+        observeNetworkPayload("websocket", url, event.data);
+      });
+    } catch (_error) {
+      // Observation failure must not affect the page's socket lifecycle.
+    }
   }
 
   function copyStaticWebSocketFields(target, source) {
@@ -120,6 +158,7 @@
 
     XMLHttpRequest.prototype.open = function patchedOpen(method, url, ...rest) {
       this.__jdchatCaptureUrl = url;
+      this.__jdchatCaptureMethod = method;
       return nativeOpen.call(this, method, url, ...rest);
     };
 
@@ -128,7 +167,9 @@
         const url = this.__jdchatCaptureUrl;
         if (!isRelevantUrl(url)) return;
         try {
-          observeNetworkPayload("xhr", url, this.responseText);
+          if (this.responseType && this.responseType !== "text" && this.responseType !== "json") return;
+          const payload = this.responseType === "json" ? this.response : this.responseText;
+          observeNetworkPayload("xhr", url, payload);
         } catch (_error) {
           // Some response types do not expose responseText.
         }
@@ -140,43 +181,125 @@
     XMLHttpRequest.prototype.send.__jdchatCaptureWrapped = true;
   }
 
-  function observeNetworkPayload(source, url, payload) {
-    const parsed = parsePayload(payload);
-    const messages = extractChatMessages(parsed).slice(0, MAX_NETWORK_MESSAGES);
-    if (!messages.length) return;
+  function observeNetworkPayload(source, url, networkPayload) {
+    const parsed = parsePayload(networkPayload);
+    const extracted = extractChatMessages(parsed).slice(0, MAX_NETWORK_MESSAGES);
+    if (!extracted.length) return;
 
-    const conversation = safeClone((window.session && window.session.customer) || {});
-    for (const message of messages) {
+    for (const item of extracted) {
+      const message = item.message;
       emitEvent({
         eventId: stableEventId(source, message),
         source,
         eventType: "message",
-        conversation,
+        conversation: deriveConversation(message),
         message: safeClone(message),
-        payload: { url: sanitizeUrl(url) },
+        payload: {
+          networkContext: {
+            url: sanitizeUrl(url),
+            matchedPath: item.path,
+            responseShape: describeShape(parsed),
+          },
+        },
         capturedAt: new Date().toISOString(),
       });
     }
   }
 
-  function extractChatMessages(value, out = [], depth = 0) {
+  function extractChatMessages(value, out = [], depth = 0, path = "$") {
     if (depth > 8 || out.length >= MAX_NETWORK_MESSAGES) return out;
     if (Array.isArray(value)) {
-      for (const item of value) extractChatMessages(item, out, depth + 1);
+      value.forEach((item, index) => extractChatMessages(item, out, depth + 1, `${path}[${index}]`));
       return out;
     }
     if (!value || typeof value !== "object") return out;
 
-    if (value.type === "chat_message" && value.body && typeof value.body === "object") {
-      out.push(value);
+    const candidate = normalizeMessageCandidate(value);
+    if (candidate) {
+      out.push({ message: candidate, path });
       return out;
     }
 
-    for (const nestedKey of ["messages", "msgs", "nMsgs", "data", "result", "body", "payload"]) {
-      if (nestedKey in value) extractChatMessages(value[nestedKey], out, depth + 1);
+    for (const nestedKey of [
+      "messages",
+      "messageList",
+      "msgList",
+      "msgs",
+      "nMsgs",
+      "records",
+      "list",
+      "history",
+      "chatMessages",
+      "items",
+      "rows",
+      "data",
+      "result",
+      "body",
+      "payload",
+    ]) {
+      if (nestedKey in value) extractChatMessages(value[nestedKey], out, depth + 1, `${path}.${nestedKey}`);
       if (out.length >= MAX_NETWORK_MESSAGES) return out;
     }
     return out;
+  }
+
+  function normalizeMessageCandidate(value) {
+    const body = normalizeBody(value.body);
+    if (value.type === "chat_message" && body && typeof body === "object") {
+      return { ...value, body };
+    }
+
+    const hasMessageIdentity = Boolean(
+      value.id || value.msgId || value.msg_id || value.messageId || value.mid || value.localId || value.localMid,
+    );
+    const hasPartyOrTime = Boolean(
+      value.from || value.to || value.timestamp || value.datetime || value.clientTime || value.time,
+    );
+    const hasBodyContent = Boolean(
+      (body && (body.type || body.content || body.url || body.template || body.data)) ||
+        value.content ||
+        value.text ||
+        (value.msg && !("code" in value)),
+    );
+
+    if (!hasBodyContent) return null;
+    if (!hasMessageIdentity && !hasPartyOrTime) return null;
+
+    return {
+      ...value,
+      type: value.type || "chat_message",
+      body: body || {
+        type: value.content || value.text || value.msg ? "text" : undefined,
+        content: value.content || value.text || value.msg,
+      },
+    };
+  }
+
+  function normalizeBody(body) {
+    if (!body) return null;
+    if (typeof body === "object") return body;
+    if (typeof body !== "string") return null;
+    const parsed = parsePayload(body);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : { type: "text", content: body };
+  }
+
+  function deriveConversation(message) {
+    const body = message && message.body && typeof message.body === "object" ? message.body : {};
+    const chatinfo = body.chatinfo && typeof body.chatinfo === "object" ? body.chatinfo : {};
+    const param = body.param && typeof body.param === "object" ? body.param : {};
+    const conversation = {
+      venderId: chatinfo.venderId || param.venderId,
+      venderName: chatinfo.venderName || param.venderName,
+      customerApp: chatinfo.customerApp || param.customerApp,
+      customerPin: chatinfo.customerPin || param.customerPin,
+      sellerApp: chatinfo.sellerApp || param.sellerApp,
+      sellerPin: chatinfo.sellerPin || param.sellerPin,
+      sessionType: chatinfo.sessionType || param.sessionType,
+      customerName: chatinfo.customerName || param.customerName,
+    };
+    const hasConversationField = Object.values(conversation).some((value) => value != null && value !== "");
+    if (hasConversationField) return safeClone(conversation);
+    return {};
   }
 
   function parsePayload(payload) {
@@ -191,6 +314,12 @@
     } catch (_error) {
       return { rawText: trimmed.slice(0, 2000) };
     }
+  }
+
+  function describeShape(value) {
+    if (Array.isArray(value)) return { type: "array", length: value.length };
+    if (!value || typeof value !== "object") return { type: typeof value };
+    return { type: "object", keys: Object.keys(value).slice(0, 20) };
   }
 
   function stableEventId(source, message) {

@@ -10,8 +10,9 @@
 注入 MAIN world 脚本
 读取 window.session.customer
 读取 window.session.messages()
-默认只读取页面已有前端状态和已渲染 DOM 消息
+默认读取页面已有前端状态和已渲染 DOM 消息
 监听当前会话 #t-chat-scroll DOM 增量
+通过插件弹窗显式开启 Network 被动监听
 把事件发到 background 队列
 批量 POST 到 http://127.0.0.1:8765/capture/events
 ```
@@ -36,7 +37,9 @@ extension/
 ├── manifest.json
 ├── injected-main.js
 ├── content-isolated.js
-└── background.js
+├── background.js
+├── options.html
+└── options.js
 ```
 
 职责：
@@ -45,6 +48,7 @@ extension/
 injected-main.js      页面 MAIN world，只读观察 window.session
 content-isolated.js   插件 isolated world，监听 DOM 和转发 page postMessage
 background.js         插件 service worker，本地队列和上报本机 Python 服务
+options.html/js       插件弹窗，配置总开关、DOM、session、Network、网关地址
 manifest.json         Chrome MV3 配置
 ```
 
@@ -74,6 +78,26 @@ https://dongdong.jd.com/
 ```
 
 手动打开一个客户会话，插件会被动采集当前会话已渲染消息和页面前端状态。
+
+如果要启用 Network + DOM 双通道，在插件弹窗中打开：
+
+```text
+Network 被动监听
+fetch
+XHR
+```
+
+然后刷新咚咚页面生效。`WebSocket` 开关默认关闭，只在需要验证实时链路且确认页面兼容时再手动打开。
+
+Network 监听只做页面内被动观察：
+
+```text
+不主动请求京东接口
+不复用 token/cookie/sign
+不保存完整响应体
+只从页面自然收到的响应/帧中提取疑似聊天消息
+事件只写入本机 http://127.0.0.1:8765/capture/events
+```
 
 历史对话需要先由客服手动点击左侧顶部的“历史咨询”时钟 tab。实测结构：
 
@@ -118,7 +142,7 @@ window.session.setStatus
 主动创建额外 WebSocket
 ```
 
-`injected-main.js` 默认不包装 WebSocket / fetch / XHR，避免影响咚咚工作台初始化。网络 hook 只保留为显式实验开关，必须在页面侧设置 `window.__JDCHAT_CAPTURE_ENABLE_NETWORK_HOOKS__ = true` 后才会启用。
+`injected-main.js` 默认不包装 WebSocket / fetch / XHR，避免影响咚咚工作台初始化。Network hook 通过插件弹窗显式打开后才注入；fetch/XHR 与 WebSocket 是独立开关，WebSocket 默认关闭。
 
 `background.js` 只向本机服务发送：
 
@@ -130,16 +154,13 @@ http://127.0.0.1:8765/capture/events
 
 ```text
 DOM 来源消息会生成 dom-* id，可能无法与结构化 session 消息完全合并
-WebSocket/XHR/fetch 网络 hook 默认关闭，需要单独实验和风控评估后再考虑启用
+Network hook 只能观察启用后页面自然收到的数据，不能回溯 DevTools 里已经存在的历史请求响应
 background 队列使用 chrome.storage.local，适合 MVP，不适合大规模长期缓存
-插件还没有配置 UI，网关地址固定为 127.0.0.1:8765
 ```
 
 后续应增加：
 
 ```text
-插件开关 UI
-网关地址配置
 本机接口 token 配置
 队列状态展示
 真实咚咚页面联调报告

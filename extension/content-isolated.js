@@ -1,23 +1,50 @@
 (() => {
   const MAIN_SOURCE = "jdchat-capture-main";
   const MESSAGE_TYPE = "jdchat-capture-event";
+  const DEFAULT_CONFIG = {
+    captureDom: true,
+    captureSession: true,
+    captureNetwork: false,
+    captureFetch: true,
+    captureXhr: true,
+    captureWebSocket: false,
+  };
   const processedDomNodes = new WeakSet();
   let observer = null;
   let observedRoot = null;
   let rootWatcher = null;
 
-  injectMainScript();
-  window.addEventListener("message", onMainWorldMessage, false);
-  startRootWatcher();
-  window.addEventListener("beforeunload", () => {
-    if (rootWatcher) clearInterval(rootWatcher);
-    if (observer) observer.disconnect();
-  });
+  bootstrap().catch(() => startWithConfig(DEFAULT_CONFIG));
 
-  function injectMainScript() {
+  async function bootstrap() {
+    const config = await readConfig();
+    startWithConfig(config);
+  }
+
+  function startWithConfig(config) {
+    injectMainScript(config);
+    window.addEventListener("message", onMainWorldMessage, false);
+    if (config.captureDom !== false) startRootWatcher();
+    window.addEventListener("beforeunload", () => {
+      if (rootWatcher) clearInterval(rootWatcher);
+      if (observer) observer.disconnect();
+    });
+  }
+
+  async function readConfig() {
+    const { config } = await chrome.storage.local.get(["config"]);
+    return { ...DEFAULT_CONFIG, ...(config || {}) };
+  }
+
+  function injectMainScript(config) {
     const script = document.createElement("script");
     script.src = chrome.runtime.getURL("injected-main.js");
     script.dataset.jdchatCapture = "main";
+    script.dataset.captureSession = config.captureSession === false ? "0" : "1";
+    script.dataset.captureNetwork = config.captureNetwork === true ? "1" : "0";
+    script.dataset.captureFetch = config.captureFetch === false ? "0" : "1";
+    script.dataset.captureXhr = config.captureXhr === false ? "0" : "1";
+    script.dataset.captureWebSocket = config.captureWebSocket === true ? "1" : "0";
     script.onload = () => script.remove();
     (document.documentElement || document.head).appendChild(script);
   }

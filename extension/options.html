@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>JDChat Capture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      body {
+        width: 360px;
+        margin: 0;
+        padding: 16px;
+        color: #1f2937;
+        background: #f8fafc;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: 18px;
+        font-weight: 650;
+      }
+
+      .panel {
+        border: 1px solid #d8dee8;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 12px;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 34px;
+        font-size: 13px;
+      }
+
+      .row + .row {
+        border-top: 1px solid #eef2f7;
+      }
+
+      label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 8px;
+        margin: 6px 0 12px;
+      }
+
+      input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+      }
+
+      .hint {
+        margin: 12px 0 0;
+        color: #64748b;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .status {
+        min-height: 18px;
+        margin-top: 10px;
+        color: #047857;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>JDChat Capture</h1>
+    <div class="panel">
+      <label for="gatewayUrl">本机网关</label>
+      <input id="gatewayUrl" type="text" autocomplete="off" spellcheck="false">
+
+      <div class="row">
+        <label><input id="enabled" type="checkbox"> 总开关</label>
+      </div>
+      <div class="row">
+        <label><input id="captureDom" type="checkbox"> DOM 监听</label>
+      </div>
+      <div class="row">
+        <label><input id="captureSession" type="checkbox"> session 快照</label>
+      </div>
+      <div class="row">
+        <label><input id="captureNetwork" type="checkbox"> Network 被动监听</label>
+      </div>
+      <div class="row">
+        <label><input id="captureFetch" type="checkbox"> fetch</label>
+      </div>
+      <div class="row">
+        <label><input id="captureXhr" type="checkbox"> XHR</label>
+      </div>
+      <div class="row">
+        <label><input id="captureWebSocket" type="checkbox"> WebSocket</label>
+      </div>
+      <p class="hint">Network 开关变更后刷新咚咚页面生效；WebSocket 默认关闭，只有在需要验证实时链路时手动打开。</p>
+      <div id="status" class="status" aria-live="polite"></div>
+    </div>
+    <script src="options.js"></script>
+  </body>
+</html>

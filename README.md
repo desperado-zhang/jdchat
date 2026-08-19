@@ -111,3 +111,14 @@ active_sidebar_tab=history
 history_list_visible=true
 message_node_count > 0
 ```
+
+Network + DOM 双通道验证：
+
+```text
+1. 点击浏览器插件 JDChat Capture 弹窗
+2. 打开 Network 被动监听、fetch、XHR
+3. 刷新 https://dongdong.jd.com/
+4. 保持 DOM/session 采集开启
+```
+
+`WebSocket` 默认关闭；需要验证实时链路时再手动打开并刷新页面。Network 监听只解析页面自然收到的响应/帧，不主动请求京东接口，不保存完整响应体。

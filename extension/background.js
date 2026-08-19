@@ -1,5 +1,11 @@
 const DEFAULT_CONFIG = {
   enabled: true,
+  captureDom: true,
+  captureSession: true,
+  captureNetwork: false,
+  captureFetch: true,
+  captureXhr: true,
+  captureWebSocket: false,
   gatewayUrl: "http://127.0.0.1:8765",
   apiToken: "",
   maxBatchSize: 50,
