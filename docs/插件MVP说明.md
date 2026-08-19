@@ -90,6 +90,15 @@ https://dongdong.jd.com/
 ```bash
 curl http://127.0.0.1:8765/health
 curl http://127.0.0.1:8765/conversations
+curl "http://127.0.0.1:8765/capture/events/recent?limit=10"
+```
+
+历史会话验证时，`/capture/events/recent` 应出现：
+
+```text
+active_sidebar_tab = history
+history_list_visible = true
+message_node_count > 0
 ```
 
 ## 4. 安全边界

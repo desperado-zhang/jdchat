@@ -9,7 +9,7 @@
   let snapshotTimer = null;
 
   window.__JDCHAT_CAPTURE_MAIN_READY__ = {
-    version: "0.1.1",
+    version: "0.1.2",
     networkHooksEnabled: ENABLE_NETWORK_HOOKS,
     startedAt: new Date().toISOString(),
   };

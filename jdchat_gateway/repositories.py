@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -225,3 +226,47 @@ def list_messages(conn: sqlite3.Connection, conversation_key: str, limit: int) -
         (conversation_key, limit),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def list_capture_events_recent(conn: sqlite3.Connection, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT event_id, source, event_type, conversation_key, message_dedupe_key,
+               payload, captured_at, received_at
+        FROM capture_events
+        ORDER BY received_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [capture_event_metadata(dict(row)) for row in rows]
+
+
+def capture_event_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    page_context = extract_page_context(row.pop("payload", None))
+    return {
+        **row,
+        "active_sidebar_tab": page_context.get("activeSidebarTab"),
+        "active_sidebar_tab_label": page_context.get("activeSidebarTabLabel"),
+        "history_list_visible": page_context.get("historyListVisible"),
+        "history_item_count": page_context.get("historyItemCount"),
+        "message_node_count": page_context.get("messageNodeCount"),
+    }
+
+
+def extract_page_context(payload_json: str | None) -> dict[str, Any]:
+    if not payload_json:
+        return {}
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    nested_payload = payload.get("payload")
+    if isinstance(nested_payload, dict) and isinstance(nested_payload.get("pageContext"), dict):
+        return nested_payload["pageContext"]
+    if isinstance(payload.get("pageContext"), dict):
+        return payload["pageContext"]
+    return {}

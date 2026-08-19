@@ -85,6 +85,7 @@ Authorization: Bearer local-secret
 ```text
 GET  /health
 POST /capture/events
+GET  /capture/events/recent
 GET  /conversations
 GET  /conversations/{conversation_key}/messages
 ```
@@ -95,4 +96,18 @@ GET  /conversations/{conversation_key}/messages
 1. msg.id
 2. conversation_key + mid
 3. conversation_key + timestamp + direction + body_type + content_hash
+```
+
+`GET /capture/events/recent` 只返回最近采集事件的元数据，便于验证历史 tab 采集，不返回消息正文：
+
+```bash
+curl "http://127.0.0.1:8765/capture/events/recent?limit=10"
+```
+
+历史对话验证时重点看：
+
+```text
+active_sidebar_tab=history
+history_list_visible=true
+message_node_count > 0
 ```

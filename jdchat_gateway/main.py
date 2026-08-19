@@ -10,6 +10,7 @@ from jdchat_gateway.db import connect, init_db
 from jdchat_gateway.models import CaptureBatchIn, CaptureRejected, CaptureResponse, HealthResponse
 from jdchat_gateway.normalize import normalize_capture_event
 from jdchat_gateway.repositories import (
+    list_capture_events_recent,
     list_conversations,
     list_messages,
     record_capture_event,
@@ -127,6 +128,17 @@ def register_routes(app: FastAPI) -> FastAPI:
         conn = connect(settings.database_path)
         try:
             return {"items": list_messages(conn, conversation_key, min(max(limit, 1), 500))}
+        finally:
+            conn.close()
+
+    @app.get("/capture/events/recent")
+    def recent_capture_events(
+        settings: Annotated[Settings, Depends(get_settings)],
+        limit: int = 20,
+    ) -> dict[str, object]:
+        conn = connect(settings.database_path)
+        try:
+            return {"items": list_capture_events_recent(conn, min(max(limit, 1), 200))}
         finally:
             conn.close()
 

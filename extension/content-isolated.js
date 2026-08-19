@@ -3,10 +3,16 @@
   const MESSAGE_TYPE = "jdchat-capture-event";
   const processedDomNodes = new WeakSet();
   let observer = null;
+  let observedRoot = null;
+  let rootWatcher = null;
 
   injectMainScript();
   window.addEventListener("message", onMainWorldMessage, false);
-  waitForChatRoot();
+  startRootWatcher();
+  window.addEventListener("beforeunload", () => {
+    if (rootWatcher) clearInterval(rootWatcher);
+    if (observer) observer.disconnect();
+  });
 
   function injectMainScript() {
     const script = document.createElement("script");
@@ -23,14 +29,17 @@
     sendEvent(data.event);
   }
 
-  function waitForChatRoot() {
+  function startRootWatcher() {
+    refreshChatRoot();
+    rootWatcher = setInterval(refreshChatRoot, 1000);
+  }
+
+  function refreshChatRoot() {
     const root = findChatRoot();
-    if (root) {
-      attachDomObserver(root);
-      scanExistingMessages(root);
-      return;
-    }
-    setTimeout(waitForChatRoot, 1000);
+    if (!root || root === observedRoot) return;
+    observedRoot = root;
+    attachDomObserver(root);
+    scanExistingMessages(root);
   }
 
   function findChatRoot() {
@@ -96,6 +105,9 @@
       eventId: `dom-${domStableId}`,
       source: "dom",
       eventType: "message",
+      payload: {
+        pageContext: readPageContext(),
+      },
       conversation: {
         customerName: customerName || undefined,
         customerApp: "dom",
@@ -137,6 +149,46 @@
     return Array.prototype.indexOf.call(parent.children, node);
   }
 
+  function readPageContext() {
+    const selectedTab = document.querySelector(".c_tabs-tab_check");
+    const selectedTabLabel = elementLabel(selectedTab);
+    return {
+      activeSidebarTab: normalizeSidebarTab(selectedTabLabel),
+      activeSidebarTabLabel: selectedTabLabel || undefined,
+      historyListVisible: !!document.querySelector(".list-compatible.recent-user-w"),
+      historyItemCount: document.querySelectorAll(".list-compatible.recent-user-w .alluser-item").length,
+      chatRootVisible: !!findChatRoot(),
+      messageNodeCount: document.querySelectorAll("#t-chat-scroll .message, .chat-scroll-wrap .message").length,
+      capturedPageUrl: location.origin + location.pathname,
+    };
+  }
+
+  function normalizeSidebarTab(label) {
+    if (/历史咨询/.test(label)) return "history";
+    if (/正在咨询/.test(label)) return "current";
+    if (/常用联系人/.test(label)) return "contacts";
+    if (/群聊/.test(label)) return "group";
+    if (/组织架构/.test(label)) return "organization";
+    return "unknown";
+  }
+
+  function elementLabel(node) {
+    if (!node) return "";
+    return (
+      node.getAttribute("title") ||
+      node.getAttribute("aria-label") ||
+      text(node)
+    ).replace(/\s+/g, " ").trim();
+  }
+
+  function withPageContext(event) {
+    const payload = event && event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+      ? { ...event.payload }
+      : {};
+    payload.pageContext = readPageContext();
+    return { ...event, payload };
+  }
+
   function hashString(input) {
     let hash = 2166136261;
     const value = String(input || "");
@@ -148,7 +200,7 @@
   }
 
   function sendEvent(event) {
-    chrome.runtime.sendMessage({ type: MESSAGE_TYPE, event }, () => {
+    chrome.runtime.sendMessage({ type: MESSAGE_TYPE, event: withPageContext(event) }, () => {
       if (chrome.runtime.lastError) {
         // Service worker may be asleep or unavailable during extension reloads. Drop rather than touch page state.
       }

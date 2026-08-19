@@ -84,3 +84,35 @@ def test_health_initializes_database(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json()["ok"] is True
     assert db_path.exists()
+
+
+def test_recent_capture_events_returns_page_context_metadata(tmp_path) -> None:
+    db_path = tmp_path / "jdchat.sqlite3"
+    app = create_app(Settings(database_path=db_path))
+    event = make_event("evt-history", msg_id="msg-history")
+    event["payload"] = {
+        "reason": "initial",
+        "pageContext": {
+            "activeSidebarTab": "history",
+            "activeSidebarTabLabel": "历史咨询",
+            "historyListVisible": True,
+            "historyItemCount": 1,
+            "messageNodeCount": 12,
+        },
+    }
+
+    with TestClient(app) as client:
+        capture = client.post("/capture/events", json={"events": [event]})
+        recent = client.get("/capture/events/recent")
+
+    assert capture.status_code == 200
+    assert recent.status_code == 200
+    item = recent.json()["items"][0]
+    assert item["event_id"] == "evt-history"
+    assert item["source"] == "session"
+    assert item["active_sidebar_tab"] == "history"
+    assert item["active_sidebar_tab_label"] == "历史咨询"
+    assert item["history_list_visible"] is True
+    assert item["history_item_count"] == 1
+    assert item["message_node_count"] == 12
+    assert "content" not in item
