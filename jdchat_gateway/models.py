@@ -4,7 +4,17 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-CaptureSource = Literal["websocket", "xhr", "fetch", "session", "dom", "manual_scroll"]
+CaptureSource = Literal[
+    "websocket",
+    "xhr",
+    "fetch",
+    "session",
+    "dom",
+    "manual_scroll",
+    "reception_list",
+    "reception_chatlog",
+    "reception_dom",
+]
 
 
 class CaptureEventIn(BaseModel):

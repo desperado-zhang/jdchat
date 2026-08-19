@@ -1,12 +1,14 @@
 const DEFAULT_CONFIG = {
   enabled: true,
-  captureDom: true,
-  captureSession: true,
+  captureReceptionChatLog: true,
+  captureLegacyRealtime: false,
+  captureDom: false,
+  captureSession: false,
   captureNetwork: false,
   captureFetch: true,
   captureXhr: true,
   captureWebSocket: false,
-  autoScrollHistory: true,
+  autoScrollHistory: false,
   gatewayUrl: "http://127.0.0.1:8765",
   apiToken: "",
   maxBatchSize: 50,
@@ -15,6 +17,8 @@ const DEFAULT_CONFIG = {
 
 const CHECKBOX_IDS = [
   "enabled",
+  "captureReceptionChatLog",
+  "captureLegacyRealtime",
   "captureDom",
   "captureSession",
   "captureNetwork",
@@ -56,7 +60,7 @@ async function saveConfig() {
     next[id] = document.getElementById(id).checked;
   }
   await chrome.storage.local.set({ config: next });
-  setStatus("已保存，刷新咚咚页面后生效");
+  setStatus("已保存，刷新相关页面后生效");
 }
 
 function setStatus(message) {

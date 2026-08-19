@@ -3,13 +3,15 @@
   const MESSAGE_TYPE = "jdchat-capture-event";
   const CONTEXT_TYPE = "jdchat-capture-context";
   const DEFAULT_CONFIG = {
-    captureDom: true,
-    captureSession: true,
+    captureReceptionChatLog: true,
+    captureLegacyRealtime: false,
+    captureDom: false,
+    captureSession: false,
     captureNetwork: false,
     captureFetch: true,
     captureXhr: true,
     captureWebSocket: false,
-    autoScrollHistory: true,
+    autoScrollHistory: false,
   };
   const CONTEXT_RETRY_DELAY_MS = 750;
   const MAX_CONTEXT_RETRY_ATTEMPTS = 8;
@@ -36,9 +38,11 @@
 
   function startWithConfig(config) {
     activeConfig = { ...DEFAULT_CONFIG, ...(config || {}) };
-    injectMainScript(activeConfig);
+    const receptionEnabled = isReceptionPage() && activeConfig.captureReceptionChatLog !== false;
+    const legacyRealtimeEnabled = isDongdongPage() && activeConfig.captureLegacyRealtime === true;
+    injectMainScript(activeConfig, { receptionEnabled, legacyRealtimeEnabled });
     window.addEventListener("message", onMainWorldMessage, false);
-    if (activeConfig.captureDom !== false) setTimeout(startRootWatcher, 1000);
+    if (legacyRealtimeEnabled && activeConfig.captureDom !== false) setTimeout(startRootWatcher, 1000);
     window.addEventListener("beforeunload", () => {
       if (rootWatcher) clearInterval(rootWatcher);
       if (observer) observer.disconnect();
@@ -50,17 +54,27 @@
     return { ...DEFAULT_CONFIG, ...(config || {}) };
   }
 
-  function injectMainScript(config) {
+  function injectMainScript(config, pageMode) {
     const script = document.createElement("script");
     script.src = chrome.runtime.getURL("injected-main.js");
     script.dataset.jdchatCapture = "main";
-    script.dataset.captureSession = config.captureSession === false ? "0" : "1";
-    script.dataset.captureNetwork = config.captureNetwork === true ? "1" : "0";
+    script.dataset.captureReceptionChatLog = pageMode.receptionEnabled ? "1" : "0";
+    script.dataset.legacyRealtimeCapture = pageMode.legacyRealtimeEnabled ? "1" : "0";
+    script.dataset.captureSession = pageMode.legacyRealtimeEnabled && config.captureSession !== false ? "1" : "0";
+    script.dataset.captureNetwork = pageMode.legacyRealtimeEnabled && config.captureNetwork === true ? "1" : "0";
     script.dataset.captureFetch = config.captureFetch === false ? "0" : "1";
     script.dataset.captureXhr = config.captureXhr === false ? "0" : "1";
-    script.dataset.captureWebSocket = config.captureWebSocket === true ? "1" : "0";
+    script.dataset.captureWebSocket = pageMode.legacyRealtimeEnabled && config.captureWebSocket === true ? "1" : "0";
     script.onload = () => script.remove();
     (document.documentElement || document.head).appendChild(script);
+  }
+
+  function isReceptionPage() {
+    return location.hostname === "shop.jd.com" && location.pathname.includes("/jdm/kefu/kf-manage-lite");
+  }
+
+  function isDongdongPage() {
+    return location.hostname === "dongdong.jd.com";
   }
 
   function onMainWorldMessage(event) {
@@ -524,6 +538,8 @@
   }
 
   function readPageContext() {
+    if (isReceptionPage()) return readReceptionPageContext();
+
     const selectedTab = document.querySelector(".c_tabs-tab_check");
     const selectedTabLabel = elementLabel(selectedTab);
     const activeSidebarTab = normalizeSidebarTab(selectedTabLabel);
@@ -540,6 +556,16 @@
       historyBackfillActive: Boolean(historyBackfillJob),
       historyBackfillCompletedCount: completedHistoryBackfills.size,
       capturedPageUrl: location.origin + location.pathname,
+    };
+  }
+
+  function readReceptionPageContext() {
+    return {
+      pageKind: "jingmai_reception_tools",
+      capturedPageUrl: location.origin + location.pathname + location.hash,
+      chatLogDrawerVisible: !!document.querySelector(".chat-log-drawer, .kf-manage-lite-drawer-open"),
+      chatLogMessageNodeCount: document.querySelectorAll(".chat-log-detail .msg-block, .msg-block").length,
+      chatLogTableRowCount: document.querySelectorAll("tbody tr, .kf-manage-lite-table-row").length,
     };
   }
 

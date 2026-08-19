@@ -6,20 +6,27 @@
   const SNAPSHOT_INTERVAL_MS = 5000;
   const MAX_MESSAGES_PER_BATCH = 100;
   const MAX_NETWORK_MESSAGES = 50;
+  const MAX_RECEPTION_MESSAGES_PER_RESPONSE = 500;
+  const MAX_RECEPTION_SESSION_CACHE = 2000;
   const scriptConfig = readScriptConfig();
   const CAPTURE_SESSION = readFlag("captureSession", true);
-  const ENABLE_NETWORK_HOOKS =
+  const ENABLE_RECEPTION_CHATLOG = readFlag("captureReceptionChatLog", false);
+  const ENABLE_GENERIC_NETWORK =
     readFlag("captureNetwork", false) || window.__JDCHAT_CAPTURE_ENABLE_NETWORK_HOOKS__ === true;
+  const ENABLE_NETWORK_HOOKS = ENABLE_RECEPTION_CHATLOG || ENABLE_GENERIC_NETWORK;
   const ENABLE_FETCH_HOOK = ENABLE_NETWORK_HOOKS && readFlag("captureFetch", true);
   const ENABLE_XHR_HOOK = ENABLE_NETWORK_HOOKS && readFlag("captureXhr", true);
   const ENABLE_WEBSOCKET_HOOK = ENABLE_NETWORK_HOOKS && readFlag("captureWebSocket", false);
+  const receptionSessionsByCid = new Map();
 
   let contextTimer = null;
   let snapshotTimer = null;
 
   window.__JDCHAT_CAPTURE_MAIN_READY__ = {
-    version: "0.1.13",
+    version: "0.2.0",
     networkHooksEnabled: ENABLE_NETWORK_HOOKS,
+    receptionChatLogEnabled: ENABLE_RECEPTION_CHATLOG,
+    genericNetworkEnabled: ENABLE_GENERIC_NETWORK,
     hooks: {
       fetch: ENABLE_FETCH_HOOK,
       xhr: ENABLE_XHR_HOOK,
@@ -140,7 +147,7 @@
   function attachWebSocketObserver(socket, url) {
     try {
       socket.addEventListener("message", (event) => {
-        observeNetworkPayload("websocket", url, event.data);
+        observeNetworkPayload("websocket", url, event.data).catch(() => undefined);
       });
     } catch (_error) {
       // Observation failure must not affect the page's socket lifecycle.
@@ -196,7 +203,7 @@
         try {
           if (this.responseType && this.responseType !== "text" && this.responseType !== "json") return;
           const payload = this.responseType === "json" ? this.response : this.responseText;
-          observeNetworkPayload("xhr", url, payload);
+          observeNetworkPayload("xhr", url, payload).catch(() => undefined);
         } catch (_error) {
           // Some response types do not expose responseText.
         }
@@ -208,8 +215,20 @@
     XMLHttpRequest.prototype.send.__jdchatCaptureWrapped = true;
   }
 
-  function observeNetworkPayload(source, url, networkPayload) {
+  async function observeNetworkPayload(source, url, networkPayload) {
     const parsed = parsePayload(networkPayload);
+    if (ENABLE_RECEPTION_CHATLOG && isReceptionListUrl(url)) {
+      rememberReceptionSessions(parsed);
+      return;
+    }
+
+    if (ENABLE_RECEPTION_CHATLOG && isReceptionChatLogUrl(url)) {
+      const emitted = await emitReceptionChatLogEvents(source, url, parsed);
+      if (emitted > 0 || !ENABLE_GENERIC_NETWORK) return;
+    }
+
+    if (!ENABLE_GENERIC_NETWORK) return;
+
     const extracted = extractChatMessages(parsed).slice(0, MAX_NETWORK_MESSAGES);
     if (!extracted.length) return;
 
@@ -231,6 +250,140 @@
         capturedAt: new Date().toISOString(),
       });
     }
+  }
+
+  function rememberReceptionSessions(parsed) {
+    for (const row of extractReceptionSessionRows(parsed)) {
+      if (!row || typeof row !== "object" || !row.cid) continue;
+      receptionSessionsByCid.set(String(row.cid), row);
+    }
+    while (receptionSessionsByCid.size > MAX_RECEPTION_SESSION_CACHE) {
+      const oldestKey = receptionSessionsByCid.keys().next().value;
+      receptionSessionsByCid.delete(oldestKey);
+    }
+  }
+
+  function extractReceptionSessionRows(value, out = [], depth = 0) {
+    if (depth > 6 || out.length >= MAX_RECEPTION_SESSION_CACHE) return out;
+    if (Array.isArray(value)) {
+      for (const item of value) extractReceptionSessionRows(item, out, depth + 1);
+      return out;
+    }
+    if (!value || typeof value !== "object") return out;
+
+    if (Array.isArray(value.waiterSessionList)) {
+      for (const row of value.waiterSessionList) {
+        if (row && typeof row === "object" && row.cid) out.push(row);
+      }
+    }
+
+    for (const key of ["data", "result", "body", "payload"]) {
+      if (key in value) extractReceptionSessionRows(value[key], out, depth + 1);
+    }
+    return out;
+  }
+
+  async function emitReceptionChatLogEvents(source, url, parsed) {
+    const cid = queryParam(url, "cid");
+    const cidHash = cid ? await sha256Hex(cid) : "";
+    const sessionRow = cid ? receptionSessionsByCid.get(String(cid)) : null;
+    const messages = extractReceptionChatLogMessages(parsed).slice(0, MAX_RECEPTION_MESSAGES_PER_RESPONSE);
+    let emitted = 0;
+
+    for (const item of messages) {
+      const message = item.message;
+      const customer = firstNonEmpty(message.customer, sessionRow && sessionRow.customer);
+      const waiter = firstNonEmpty(message.waiter, sessionRow && sessionRow.service);
+      const customerHash = customer ? await sha256Hex(customer) : undefined;
+      const waiterHash = waiter ? await sha256Hex(waiter) : undefined;
+      const eventMessage = sanitizeReceptionMessage(message, { cidHash, customerHash, waiterHash });
+      emitEvent({
+        eventId: stableReceptionEventId(cidHash, eventMessage),
+        source: "reception_chatlog",
+        eventType: "message",
+        conversation: buildReceptionConversation(sessionRow, message, { cidHash, customerHash, waiterHash }),
+        message: eventMessage,
+        payload: {
+          networkContext: {
+            source,
+            url: sanitizeUrl(url),
+            matchedPath: item.path,
+            responseShape: describeShape(parsed),
+          },
+        },
+        capturedAt: new Date().toISOString(),
+      });
+      emitted += 1;
+    }
+
+    return emitted;
+  }
+
+  function extractReceptionChatLogMessages(value, out = [], depth = 0, path = "$") {
+    if (depth > 8 || out.length >= MAX_RECEPTION_MESSAGES_PER_RESPONSE) return out;
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => extractReceptionChatLogMessages(item, out, depth + 1, `${path}[${index}]`));
+      return out;
+    }
+    if (!value || typeof value !== "object") return out;
+
+    if (Array.isArray(value.chatLogMessageList)) {
+      value.chatLogMessageList.forEach((message, index) => {
+        if (isReceptionChatLogMessage(message)) out.push({ message, path: `${path}.chatLogMessageList[${index}]` });
+      });
+    }
+
+    for (const key of ["chatLogList", "data", "result", "body", "payload"]) {
+      if (key in value) extractReceptionChatLogMessages(value[key], out, depth + 1, `${path}.${key}`);
+      if (out.length >= MAX_RECEPTION_MESSAGES_PER_RESPONSE) return out;
+    }
+    return out;
+  }
+
+  function isReceptionChatLogMessage(value) {
+    if (!value || typeof value !== "object") return false;
+    const hasIdentity = value.mid != null || value.uuid || value.sid;
+    const hasContent = value.content || value.imgUrl || value.img_url || value.mediaUrl;
+    const hasTime = value.created || value.messageAt || value.message_at;
+    return Boolean(hasTime && (hasIdentity || hasContent));
+  }
+
+  function buildReceptionConversation(row, message, hashes) {
+    return {
+      cidHash: hashes.cidHash || undefined,
+      customerHash: hashes.customerHash || undefined,
+      waiterHash: hashes.waiterHash || undefined,
+      serviceHash: hashes.waiterHash || undefined,
+      mallId: firstNonEmpty(message.mallId, row && row.mallId),
+      mallName: row && row.mallName,
+      groupId: row && row.groupId,
+      groupName: row && row.groupName,
+      sessionType: row && row.sessionType,
+      sessionTypeDesc: row && row.sessionTypeDesc,
+      consultationDate: row && row.consultationDate,
+      allocateTime: row && row.allocateTime,
+      goodsName: row && row.goodsName,
+      goodsId: row && row.pid,
+    };
+  }
+
+  function sanitizeReceptionMessage(message, hashes) {
+    const rawMid = firstNonEmpty(message.mid);
+    const rawUuid = firstNonEmpty(message.uuid);
+    const hasMid = rawMid !== "";
+    const identity = hasMid ? rawMid : rawUuid ? hashString(rawUuid) : hashString(JSON.stringify(message).slice(0, 1000));
+    return {
+      id: hashes.cidHash ? `jm:${hashes.cidHash}:${identity}` : `jm:${identity}`,
+      mid: hasMid ? rawMid : undefined,
+      created: firstNonEmpty(message.created, message.messageAt, message.message_at),
+      waiterSend: toBoolean(message.waiterSend),
+      type: firstNonEmpty(message.type) || (firstNonEmpty(message.imgUrl, message.img_url, message.mediaUrl) ? "image" : "text"),
+      content: message.content != null ? String(message.content) : undefined,
+      imgUrl: firstNonEmpty(message.imgUrl, message.img_url, message.mediaUrl, message.media_url),
+      width: firstNonEmpty(message.width),
+      height: firstNonEmpty(message.height),
+      lang: firstNonEmpty(message.lang),
+    };
   }
 
   function extractChatMessages(value, out = [], depth = 0, path = "$") {
@@ -357,6 +510,11 @@
     return `${source}-${hashString(JSON.stringify(safeClone(message)).slice(0, 4000))}`;
   }
 
+  function stableReceptionEventId(cidHash, message) {
+    const identity = message && (message.id || message.mid || hashString(JSON.stringify(message).slice(0, 1000)));
+    return `reception-chatlog-${cidHash || "unknown"}-${identity}`;
+  }
+
   function emitEvent(event) {
     window.postMessage({ source: SOURCE, type: MESSAGE_TYPE, event }, "*");
   }
@@ -402,11 +560,64 @@
   }
 
   function isRelevantUrl(url) {
-    return /api-dd\.jd\.com|api\.m\.jd\.com|vp\.jd\.com|dongdong\.jd\.com\/workbench/i.test(String(url || ""));
+    const text = String(url || "");
+    if (ENABLE_RECEPTION_CHATLOG && (isReceptionListUrl(text) || isReceptionChatLogUrl(text))) return true;
+    if (!ENABLE_GENERIC_NETWORK) return false;
+    return /api-dd\.jd\.com|api\.m\.jd\.com|vp\.jd\.com|dongdong\.jd\.com\/workbench/i.test(text);
+  }
+
+  function isReceptionListUrl(url) {
+    return /\/waiterSession\/jingmai\/queryList(?:\?|$)/i.test(String(url || ""));
+  }
+
+  function isReceptionChatLogUrl(url) {
+    return /\/waiterSession\/queryChatLog(?:\?|$)/i.test(String(url || ""));
   }
 
   function sanitizeUrl(url) {
-    return String(url || "").replace(/([?&](?:token|aid|pin|app|account|access_token|sign|body|param_json)=)[^&]+/gi, "$1<redacted>");
+    return String(url || "").replace(
+      /([?&](?:token|aid|pin|app|account|access_token|sign|body|param_json|cid|sid|uuid|customer|waiter|service|mallId|appId|toCid)=)[^&]+/gi,
+      "$1<redacted>",
+    );
+  }
+
+  function queryParam(url, name) {
+    try {
+      return new URL(String(url || ""), location.href).searchParams.get(name) || "";
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  function firstNonEmpty(...values) {
+    for (const value of values) {
+      if (value == null) continue;
+      if (typeof value === "string" && !value.trim()) continue;
+      return value;
+    }
+    return "";
+  }
+
+  function toBoolean(value) {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value !== 0;
+    if (typeof value === "string") return /^(1|true|yes|y)$/i.test(value.trim());
+    return false;
+  }
+
+  async function sha256Hex(input) {
+    const value = String(input || "");
+    try {
+      if (window.crypto && window.crypto.subtle && typeof TextEncoder !== "undefined") {
+        const digest = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+        return Array.from(new Uint8Array(digest))
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("");
+      }
+    } catch (_error) {
+      // Fall back to the local non-cryptographic hash only when Web Crypto is unavailable.
+    }
+    return hashString(value);
   }
 
   function hashString(input) {

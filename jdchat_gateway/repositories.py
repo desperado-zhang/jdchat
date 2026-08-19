@@ -237,7 +237,7 @@ def record_capture_event(conn: sqlite3.Connection, normalized: dict[str, Any]) -
         """,
         (
             normalized["event_id"],
-            "jd_dongdong",
+            normalized["conversation"]["platform"],
             normalized["source"],
             normalized["event_type"],
             normalized["conversation"]["conversation_key"],

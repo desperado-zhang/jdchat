@@ -32,6 +32,33 @@ def make_event(event_id: str, source: str = "session", msg_id: str = "msg-1") ->
     }
 
 
+def make_reception_event(event_id: str, mid: str = "9001") -> dict:
+    return {
+        "eventId": event_id,
+        "source": "reception_chatlog",
+        "eventType": "message",
+        "conversation": {
+            "cidHash": "cid-hash-1",
+            "customer": "customer-pin",
+            "service": "waiter-pin",
+            "mallName": "shop",
+            "sessionTypeDesc": "在线咨询",
+        },
+        "message": {
+            "mid": mid,
+            "uuid": f"uuid-{mid}",
+            "sid": f"sid-{mid}",
+            "created": "2026-08-19 21:12:33",
+            "waiterSend": False,
+            "type": "text",
+            "content": "您好",
+            "customer": "customer-pin",
+            "waiter": "waiter-pin",
+        },
+        "capturedAt": "2026-08-19T13:12:34+00:00",
+    }
+
+
 def test_capture_events_upserts_duplicate_message_sources(tmp_path) -> None:
     db_path = tmp_path / "jdchat.sqlite3"
     app = create_app(Settings(database_path=db_path))
@@ -60,6 +87,46 @@ def test_capture_events_upserts_duplicate_message_sources(tmp_path) -> None:
     assert messages[0][2] == "hello"
     assert len(conversations) == 1
     assert [row[0] for row in events] == ["evt-1", "evt-2"]
+
+
+def test_capture_events_dedupes_reception_chatlog_message_by_cid_hash_and_mid(tmp_path) -> None:
+    db_path = tmp_path / "jdchat.sqlite3"
+    app = create_app(Settings(database_path=db_path))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/capture/events",
+            json={"events": [make_reception_event("reception-evt-1"), make_reception_event("reception-evt-2")]},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] == 2
+    assert response.json()["inserted"] == 1
+    assert response.json()["duplicates"] == 1
+
+    conn = sqlite3.connect(db_path)
+    try:
+        messages = conn.execute(
+            "SELECT platform, msg_id, mid, source, direction, message_at FROM messages"
+        ).fetchall()
+        events = conn.execute("SELECT event_id, platform, source FROM capture_events ORDER BY event_id").fetchall()
+    finally:
+        conn.close()
+
+    assert messages == [
+        (
+            "jd_jingmai_reception",
+            "jm:cid-hash-1:9001",
+            9001,
+            "reception_chatlog",
+            "customer_or_external",
+            "2026-08-19T13:12:33+00:00",
+        )
+    ]
+    assert events == [
+        ("reception-evt-1", "jd_jingmai_reception", "reception_chatlog"),
+        ("reception-evt-2", "jd_jingmai_reception", "reception_chatlog"),
+    ]
 
 
 def test_capture_events_counts_exact_duplicate(tmp_path) -> None:

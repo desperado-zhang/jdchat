@@ -1,11 +1,13 @@
 {
   "manifest_version": 3,
   "name": "JDChat Passive Capture",
-  "version": "0.1.13",
-  "description": "Passive local capture bridge for JD Dongdong chat data.",
+  "version": "0.2.0",
+  "description": "Passive local capture bridge for JD Jingmai chat log data.",
   "permissions": ["storage", "alarms"],
   "host_permissions": [
     "https://dongdong.jd.com/*",
+    "https://shop.jd.com/*",
+    "https://kf.jd.com/*",
     "http://127.0.0.1:8765/*"
   ],
   "background": {
@@ -18,7 +20,10 @@
   "options_page": "options.html",
   "content_scripts": [
     {
-      "matches": ["https://dongdong.jd.com/*"],
+      "matches": [
+        "https://dongdong.jd.com/*",
+        "https://shop.jd.com/jdm/kefu/kf-manage-lite/*"
+      ],
       "js": ["content-isolated.js"],
       "run_at": "document_start"
     }
@@ -26,7 +31,10 @@
   "web_accessible_resources": [
     {
       "resources": ["injected-main.js"],
-      "matches": ["https://dongdong.jd.com/*"]
+      "matches": [
+        "https://dongdong.jd.com/*",
+        "https://shop.jd.com/*"
+      ]
     }
   ]
 }
