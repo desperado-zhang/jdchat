@@ -340,7 +340,7 @@
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     }
 
-    const deadline = Date.now() + 3000;
+    const deadline = Date.now() + 8000;
     while (Date.now() < deadline) {
       if (!findReceptionDrawer()) return true;
       await delay(150);
@@ -370,7 +370,20 @@
     const drawers = [
       ...document.querySelectorAll(".chat-log-drawer, .kf-manage-lite-drawer-open, .kf-manage-lite-drawer-right"),
     ];
-    return drawers.find((drawer) => isVisible(drawer)) || null;
+    return drawers.find((drawer) => isOpenReceptionDrawer(drawer)) || null;
+  }
+
+  function isOpenReceptionDrawer(drawer) {
+    if (!isVisible(drawer)) return false;
+    const wrapper = drawer.querySelector(".kf-manage-lite-drawer-content-wrapper");
+    if (!wrapper) return true;
+
+    const classText = String(wrapper.className || "");
+    const style = window.getComputedStyle(wrapper);
+    const rect = wrapper.getBoundingClientRect();
+    if (classText.includes("drawer-content-wrapper-hidden")) return false;
+    if (classText.includes("drawer-panel-motion-right-leave")) return false;
+    return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
   }
 
   function findReceptionDrawerCloseButton(drawer) {
