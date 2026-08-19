@@ -75,6 +75,16 @@ https://dongdong.jd.com/
 
 手动打开一个客户会话，插件会被动采集当前会话已渲染消息和页面前端状态。
 
+历史对话需要先由客服手动点击左侧顶部的“历史咨询”时钟 tab。实测结构：
+
+```text
+.c_tabs-tab[title="历史咨询"]        历史咨询入口
+.list-compatible.recent-user-w      历史咨询列表容器
+.alluser-item                       单个历史会话行
+```
+
+插件默认不自动点击“历史咨询”，也不自动遍历 `.alluser-item`。客服手动进入历史 tab 并手动点开某个历史会话后，插件再读取右侧已经渲染出的会话消息。
+
 检查后端：
 
 ```bash
@@ -93,6 +103,8 @@ curl http://127.0.0.1:8765/conversations
 window.session.send
 window.session.read
 window.session.setStatus
+自动点击历史咨询 tab
+自动遍历历史会话行
 主动 fetch 京东接口
 主动创建额外 WebSocket
 ```
