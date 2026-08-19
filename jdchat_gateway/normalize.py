@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from jdchat_gateway.dedupe import (
     compute_dedupe_key,
@@ -12,13 +11,7 @@ from jdchat_gateway.dedupe import (
     sha256_text,
 )
 
-DONGDONG_PLATFORM = "jd_dongdong"
-RECEPTION_PLATFORM = "jd_jingmai_reception"
-PLATFORM = DONGDONG_PLATFORM
-RECEPTION_SOURCES = {"reception_list", "reception_chatlog", "reception_dom"}
-SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
-SQLITE_INT_MIN = -(2**63)
-SQLITE_INT_MAX = 2**63 - 1
+PLATFORM = "jd_dongdong"
 
 SENSITIVE_KEY_FRAGMENTS = (
     "cookie",
@@ -30,16 +23,6 @@ SENSITIVE_KEY_FRAGMENTS = (
     "sign",
     "aid",
     "pin",
-    "customer",
-    "waiter",
-    "service",
-)
-SENSITIVE_KEY_EXACT = {"cid", "sid", "uuid", "appid", "mallid", "tocid"}
-LOCAL_DATETIME_FORMATS = (
-    "%Y-%m-%d %H:%M:%S",
-    "%Y-%m-%d %H:%M",
-    "%Y/%m/%d %H:%M:%S",
-    "%Y/%m/%d %H:%M",
 )
 
 
@@ -63,43 +46,15 @@ def to_int(value: Any) -> int | None:
         return None
 
 
-def to_sqlite_int(value: Any) -> int | None:
-    parsed = to_int(value)
-    if parsed is None or parsed < SQLITE_INT_MIN or parsed > SQLITE_INT_MAX:
-        return None
-    return parsed
-
-
 def timestamp_to_iso(value: Any) -> str | None:
     ts = to_int(value)
-    if ts is not None:
-        if ts > 10_000_000_000:
-            seconds = ts / 1000
-        else:
-            seconds = ts
-        return datetime.fromtimestamp(seconds, tz=UTC).isoformat()
-
-    if not isinstance(value, str):
+    if ts is None:
         return None
-
-    raw = value.strip()
-    if not raw:
-        return None
-
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=SHANGHAI_TZ)
-        return parsed.astimezone(UTC).isoformat()
-    except ValueError:
-        pass
-
-    for fmt in LOCAL_DATETIME_FORMATS:
-        try:
-            return datetime.strptime(raw, fmt).replace(tzinfo=SHANGHAI_TZ).astimezone(UTC).isoformat()
-        except ValueError:
-            continue
-    return None
+    if ts > 10_000_000_000:
+        seconds = ts / 1000
+    else:
+        seconds = ts
+    return datetime.fromtimestamp(seconds, tz=UTC).isoformat()
 
 
 def compact_json(value: Any) -> str | None:
@@ -108,35 +63,15 @@ def compact_json(value: Any) -> str | None:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
-def is_sensitive_key(key: str) -> bool:
-    key_lower = key.lower()
-    normalized = key_lower.replace("_", "").replace("-", "")
-    return any(part in key_lower for part in SENSITIVE_KEY_FRAGMENTS) or normalized in SENSITIVE_KEY_EXACT
-
-
-def redacted_value(value: Any) -> dict[str, Any]:
-    text = value if isinstance(value, str) else compact_json(value)
-    text = "" if text is None else str(text)
-    return {"redacted": True, "len": len(text), "hash": sha256_text(text)}
-
-
 def redact_sensitive(value: Any, key: str = "") -> Any:
-    sensitive = is_sensitive_key(key) if key else False
+    key_lower = key.lower()
     if isinstance(value, dict):
         return {k: redact_sensitive(v, k) for k, v in value.items()}
     if isinstance(value, list):
         return [redact_sensitive(item, key) for item in value]
-    if sensitive and value is not None:
-        return redacted_value(value)
+    if isinstance(value, str) and any(part in key_lower for part in SENSITIVE_KEY_FRAGMENTS):
+        return {"redacted": True, "len": len(value), "hash": sha256_text(value)}
     return value
-
-
-def platform_for_source(source: str | None) -> str:
-    return RECEPTION_PLATFORM if source in RECEPTION_SOURCES else DONGDONG_PLATFORM
-
-
-def is_reception_source(source: str | None) -> bool:
-    return platform_for_source(source) == RECEPTION_PLATFORM
 
 
 def event_payload_message(event: dict[str, Any]) -> dict[str, Any] | None:
@@ -145,95 +80,12 @@ def event_payload_message(event: dict[str, Any]) -> dict[str, Any] | None:
         return message
     payload = event.get("payload")
     if isinstance(payload, dict):
-        nested = payload.get("message") or payload.get("msg") or payload.get("chatLogMessage") or payload.get("data")
+        nested = payload.get("message") or payload.get("msg") or payload.get("data")
         if isinstance(nested, dict):
             return nested
         if "body" in payload or "from" in payload or "to" in payload:
             return payload
     return None
-
-
-def boolish(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int | float):
-        return value != 0
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y"}
-    return False
-
-
-def normalize_reception_conversation(
-    *,
-    event: dict[str, Any],
-    message: dict[str, Any] | None,
-    batch: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    conversation = dict(event.get("conversation") or {})
-    message = message or {}
-    batch = batch or {}
-
-    raw_cid = pick(conversation, "cid") or pick(event, "cid") or pick(message, "cid")
-    cid_hash = (
-        pick(conversation, "cid_hash", "cidHash", "conversationCidHash")
-        or pick(event, "cid_hash", "cidHash")
-        or (hash_identifier(str(raw_cid)) if raw_cid else None)
-    )
-    customer_value = (
-        pick(conversation, "customer", "customer_pin", "customerPin", "customerName", "customer_name")
-        or pick(message, "customer")
-    )
-    waiter_value = (
-        pick(conversation, "waiter", "service", "service_pin", "servicePin", "seller_pin", "sellerPin")
-        or pick(message, "waiter")
-        or pick(batch, "waiterAccountHash")
-    )
-
-    customer_pin_hash = (
-        pick(conversation, "customer_pin_hash", "customerPinHash", "customer_hash", "customerHash")
-        or (hash_identifier(str(customer_value)) if customer_value else None)
-    )
-    seller_pin_hash = (
-        pick(conversation, "seller_pin_hash", "sellerPinHash", "waiter_hash", "waiterHash", "service_hash", "serviceHash")
-        or (waiter_value if pick(batch, "waiterAccountHash") == waiter_value else None)
-        or (hash_identifier(str(waiter_value)) if waiter_value else None)
-    )
-    vender_id = (
-        pick(conversation, "mall_id", "mallId", "vender_id", "venderId", "shop_id", "shopId")
-        or pick(batch, "shopId")
-        or pick(message, "mallId", "mall_id")
-    )
-    vender_name = pick(conversation, "mall_name", "mallName", "vender_name", "venderName")
-    session_type = str(
-        pick(conversation, "session_type", "sessionTypeDesc", "sessionType")
-        or pick(message, "sessionTypeDesc", "sessionType")
-        or "reception_chatlog"
-    )
-
-    conversation_key = pick(conversation, "conversation_key", "conversationKey")
-    if not conversation_key:
-        identity = cid_hash or f"{vender_id or ''}:{customer_pin_hash or ''}:{seller_pin_hash or ''}:{session_type}"
-        conversation_key = sha256_text(f"{RECEPTION_PLATFORM}:{identity}")
-
-    raw_snapshot = {**conversation}
-    if cid_hash and "cidHash" not in raw_snapshot and "cid_hash" not in raw_snapshot:
-        raw_snapshot["cidHash"] = cid_hash
-
-    return {
-        "platform": RECEPTION_PLATFORM,
-        "conversation_key": conversation_key,
-        "vender_id": vender_id,
-        "vender_name": vender_name,
-        "seller_app": "jingmai.waiter",
-        "seller_pin_hash": seller_pin_hash,
-        "customer_app": "jingmai.customer",
-        "customer_pin_hash": customer_pin_hash,
-        "customer_name": pick(conversation, "customer_name", "customerName", "name"),
-        "session_type": session_type,
-        "last_read_mid": to_sqlite_int(pick(conversation, "last_read_mid", "lastReadMid")),
-        "unread_count": to_sqlite_int(pick(conversation, "unread_count", "unreadCount")),
-        "raw_customer": compact_json(redact_sensitive(raw_snapshot)),
-    }
 
 
 def normalize_conversation(
@@ -242,11 +94,6 @@ def normalize_conversation(
     message: dict[str, Any] | None,
     batch: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    source = event.get("source")
-    platform = platform_for_source(source)
-    if platform == RECEPTION_PLATFORM:
-        return normalize_reception_conversation(event=event, message=message, batch=batch)
-
     conversation = dict(event.get("conversation") or {})
     body = message.get("body") if isinstance(message, dict) and isinstance(message.get("body"), dict) else {}
     chatinfo = body.get("chatinfo") if isinstance(body.get("chatinfo"), dict) else {}
@@ -294,11 +141,11 @@ def normalize_conversation(
     conversation_key = pick(conversation, "conversation_key", "conversationKey")
     if not conversation_key:
         conversation_key = sha256_text(
-            f"{platform}:{vender_id or ''}:{customer_app}:{customer_pin_hash or ''}:{session_type}"
+            f"{PLATFORM}:{vender_id or ''}:{customer_app}:{customer_pin_hash or ''}:{session_type}"
         )
 
     return {
-        "platform": platform,
+        "platform": PLATFORM,
         "conversation_key": conversation_key,
         "vender_id": vender_id,
         "vender_name": vender_name,
@@ -308,10 +155,8 @@ def normalize_conversation(
         "customer_pin_hash": customer_pin_hash,
         "customer_name": pick(conversation, "customer_name", "customerName", "name") or pick(customer, "name"),
         "session_type": session_type,
-        "last_read_mid": to_sqlite_int(
-            pick(conversation, "last_read_mid", "lastReadMid") or pick(customer, "lastReadMid")
-        ),
-        "unread_count": to_sqlite_int(pick(conversation, "unread_count", "unreadCount") or pick(customer, "unreadCount")),
+        "last_read_mid": to_int(pick(conversation, "last_read_mid", "lastReadMid") or pick(customer, "lastReadMid")),
+        "unread_count": to_int(pick(conversation, "unread_count", "unreadCount") or pick(customer, "unreadCount")),
         "raw_customer": compact_json(redact_sensitive(customer or conversation)),
     }
 
@@ -335,116 +180,12 @@ def infer_direction(message: dict[str, Any], conversation: dict[str, Any]) -> st
     return "unknown"
 
 
-def normalize_reception_message(
-    *,
-    event: dict[str, Any],
-    message: dict[str, Any],
-    conversation: dict[str, Any],
-) -> dict[str, Any]:
-    cid_hash = pick(event.get("conversation") or {}, "cid_hash", "cidHash", "conversationCidHash")
-    if not cid_hash:
-        conversation_key = conversation.get("conversation_key") or ""
-        cid_hash = conversation_key[:16] if conversation_key else None
-
-    raw_mid = pick(message, "mid")
-    uuid = pick(message, "uuid")
-    sid = pick(message, "sid")
-    explicit_msg_id = pick(message, "id", "msgId", "msg_id")
-    if explicit_msg_id:
-        msg_id = str(explicit_msg_id)
-    elif raw_mid not in (None, "") and cid_hash:
-        msg_id = f"jm:{cid_hash}:{raw_mid}"
-    elif uuid and cid_hash:
-        msg_id = f"jm:{cid_hash}:{uuid}"
-    elif uuid:
-        msg_id = f"jm:uuid:{uuid}"
-    else:
-        msg_id = None
-
-    media_url = pick(message, "imgUrl", "img_url", "mediaUrl", "media_url")
-    body_type = "image" if media_url else str(pick(message, "bodyType", "body_type", "type") or "text")
-    content = pick(message, "content", "msg", "text")
-    if content is not None:
-        content = str(content)
-
-    waiter_send = boolish(pick(message, "waiterSend", "waiter_send"))
-    direction = "seller_or_waiter" if waiter_send else "customer_or_external"
-    message_at = timestamp_to_iso(pick(message, "created", "messageAt", "message_at", "time"))
-    customer = pick(message, "customer")
-    waiter = pick(message, "waiter")
-    customer_hash = pick(event.get("conversation") or {}, "customer_pin_hash", "customerPinHash", "customerHash")
-    customer_hash = customer_hash or (hash_identifier(str(customer)) if customer else conversation.get("customer_pin_hash"))
-    waiter_hash = pick(event.get("conversation") or {}, "seller_pin_hash", "sellerPinHash", "waiterHash", "serviceHash")
-    waiter_hash = waiter_hash or (hash_identifier(str(waiter)) if waiter else conversation.get("seller_pin_hash"))
-    from_hash = waiter_hash if waiter_send else customer_hash
-    to_hash = customer_hash if waiter_send else waiter_hash
-    msg_content_hash = content_hash(content)
-    mid = to_sqlite_int(raw_mid)
-    dedupe_key = compute_dedupe_key(
-        platform=RECEPTION_PLATFORM,
-        conversation_key=conversation["conversation_key"],
-        msg_id=msg_id,
-        mid=raw_mid if raw_mid not in (None, "") else None,
-        timestamp=message_at or pick(message, "created", "messageAt", "message_at", "time"),
-        direction=direction,
-        body_type=body_type,
-        content_hash_value=msg_content_hash,
-    )
-    captured_at = pick(event, "captured_at", "capturedAt") or now_iso()
-
-    return {
-        "dedupe_key": dedupe_key,
-        "platform": RECEPTION_PLATFORM,
-        "conversation_key": conversation["conversation_key"],
-        "msg_id": msg_id,
-        "mid": mid,
-        "local_id": str(sid) if sid not in (None, "") else None,
-        "direction": direction,
-        "top_type": "jingmai_chat_log",
-        "body_type": body_type,
-        "content": content,
-        "content_hash": msg_content_hash,
-        "media_url": media_url,
-        "media_local_path": pick(message, "localPath", "local_path", "mediaLocalPath", "media_local_path"),
-        "media_mime_type": pick(message, "mimeType", "mime_type", "mediaMimeType", "media_mime_type"),
-        "media_storage_provider": pick(message, "storageProvider", "storage_provider", "mediaStorageProvider"),
-        "media_download_status": pick(message, "downloadStatus", "download_status", "mediaDownloadStatus"),
-        "media_download_error": pick(message, "downloadError", "download_error", "mediaDownloadError"),
-        "media_width": to_sqlite_int(pick(message, "width")),
-        "media_height": to_sqlite_int(pick(message, "height")),
-        "media_size": to_sqlite_int(pick(message, "size")),
-        "template_type": None,
-        "template_payload": None,
-        "message_at": message_at,
-        "client_time": None,
-        "datetime_ms": None,
-        "timestamp_ms": None,
-        "read_flag": None,
-        "state": None,
-        "lang": pick(message, "lang"),
-        "from_app": "jingmai.waiter" if waiter_send else "jingmai.customer",
-        "from_pin_hash": from_hash,
-        "from_client_type": None,
-        "from_art": None,
-        "to_app": "jingmai.customer" if waiter_send else "jingmai.waiter",
-        "to_pin_hash": to_hash,
-        "source": event["source"],
-        "raw_json": compact_json(redact_sensitive(message)),
-        "captured_at": captured_at,
-    }
-
-
 def normalize_message(
     *,
     event: dict[str, Any],
     message: dict[str, Any],
     conversation: dict[str, Any],
 ) -> dict[str, Any]:
-    source = event.get("source")
-    platform = platform_for_source(source)
-    if platform == RECEPTION_PLATFORM:
-        return normalize_reception_message(event=event, message=message, conversation=conversation)
-
     body = message.get("body") if isinstance(message.get("body"), dict) else {}
     from_party = message.get("from") if isinstance(message.get("from"), dict) else {}
     to_party = message.get("to") if isinstance(message.get("to"), dict) else {}
@@ -456,8 +197,7 @@ def normalize_message(
     media_url = pick(body, "url", "mediaUrl", "media_url")
     msg_content_hash = content_hash(content)
     msg_id = pick(message, "id", "msgId", "msg_id")
-    raw_mid = pick(message, "mid")
-    mid = to_sqlite_int(raw_mid)
+    mid = to_int(pick(message, "mid"))
     direction = pick(message, "direction") or infer_direction(message, conversation)
     dedupe_msg_id = msg_id
     dedupe_timestamp = timestamp
@@ -468,10 +208,10 @@ def normalize_message(
         dedupe_content_hash = content_hash(compact_json({"content": content, "media_url": media_url}))
 
     dedupe_key = compute_dedupe_key(
-        platform=platform,
+        platform=PLATFORM,
         conversation_key=conversation["conversation_key"],
         msg_id=dedupe_msg_id,
-        mid=mid if mid is not None else raw_mid,
+        mid=mid,
         timestamp=dedupe_timestamp,
         direction=direction,
         body_type=body_type,
@@ -482,7 +222,7 @@ def normalize_message(
 
     return {
         "dedupe_key": dedupe_key,
-        "platform": platform,
+        "platform": PLATFORM,
         "conversation_key": conversation["conversation_key"],
         "msg_id": msg_id,
         "mid": mid,
@@ -505,11 +245,11 @@ def normalize_message(
         or ("template2" if body_type == "template2" else None),
         "template_payload": compact_json(redact_sensitive(body.get("template") or body.get("data"))),
         "message_at": timestamp_to_iso(timestamp),
-        "client_time": to_sqlite_int(pick(message, "clientTime")),
-        "datetime_ms": to_sqlite_int(pick(message, "datetime")),
-        "timestamp_ms": to_sqlite_int(pick(message, "timestamp")),
-        "read_flag": to_sqlite_int(pick(message, "readFlag", "read_flag")),
-        "state": to_sqlite_int(pick(message, "state")),
+        "client_time": to_int(pick(message, "clientTime")),
+        "datetime_ms": to_int(pick(message, "datetime")),
+        "timestamp_ms": to_int(pick(message, "timestamp")),
+        "read_flag": to_int(pick(message, "readFlag", "read_flag")),
+        "state": to_int(pick(message, "state")),
         "lang": pick(message, "lang"),
         "from_app": pick(from_party, "app"),
         "from_pin_hash": hash_identifier(pick(from_party, "pin")),

@@ -11,9 +11,6 @@ CaptureSource = Literal[
     "session",
     "dom",
     "manual_scroll",
-    "reception_list",
-    "reception_chatlog",
-    "reception_dom",
 ]
 
 

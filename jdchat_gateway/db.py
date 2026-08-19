@@ -100,6 +100,84 @@ CREATE TABLE IF NOT EXISTS capture_events (
 CREATE INDEX IF NOT EXISTS idx_capture_events_received_at
   ON capture_events (received_at DESC);
 
+CREATE TABLE IF NOT EXISTS reception_chatlog_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform TEXT NOT NULL DEFAULT 'jd_jingmai_reception',
+  conversation_key TEXT NOT NULL UNIQUE,
+  cid_hash TEXT,
+  mall_id TEXT,
+  mall_name TEXT,
+  group_id TEXT,
+  group_name TEXT,
+  customer_hash TEXT,
+  waiter_hash TEXT,
+  session_type TEXT,
+  session_type_desc TEXT,
+  consultation_at TEXT,
+  allocate_at TEXT,
+  goods_id TEXT,
+  goods_name TEXT,
+  last_msg_id TEXT,
+  last_mid TEXT,
+  last_message_at TEXT,
+  raw_session TEXT,
+  captured_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_reception_chatlog_sessions_cid_hash
+  ON reception_chatlog_sessions (cid_hash);
+
+CREATE INDEX IF NOT EXISTS idx_reception_chatlog_sessions_last_message_at
+  ON reception_chatlog_sessions (last_message_at DESC);
+
+CREATE TABLE IF NOT EXISTS reception_chatlog_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  conversation_key TEXT NOT NULL,
+  msg_id TEXT,
+  mid TEXT,
+  local_id TEXT,
+  direction TEXT NOT NULL,
+  body_type TEXT,
+  content TEXT,
+  content_hash TEXT,
+  media_url TEXT,
+  media_width INTEGER,
+  media_height INTEGER,
+  message_at TEXT,
+  lang TEXT,
+  from_hash TEXT,
+  to_hash TEXT,
+  source TEXT NOT NULL,
+  raw_json TEXT,
+  captured_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (conversation_key) REFERENCES reception_chatlog_sessions(conversation_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reception_chatlog_messages_conversation_time
+  ON reception_chatlog_messages (conversation_key, message_at);
+
+CREATE INDEX IF NOT EXISTS idx_reception_chatlog_messages_captured_at
+  ON reception_chatlog_messages (captured_at DESC);
+
+CREATE TABLE IF NOT EXISTS reception_chatlog_events (
+  event_id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  conversation_key TEXT,
+  message_dedupe_key TEXT,
+  payload TEXT,
+  captured_at TEXT NOT NULL,
+  received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_reception_chatlog_events_received_at
+  ON reception_chatlog_events (received_at DESC);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   actor_type TEXT NOT NULL,

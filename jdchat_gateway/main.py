@@ -12,6 +12,18 @@ from jdchat_gateway.db import connect, init_db
 from jdchat_gateway.media import cache_message_media, media_public_url
 from jdchat_gateway.models import CaptureBatchIn, CaptureRejected, CaptureResponse, HealthResponse
 from jdchat_gateway.normalize import normalize_capture_event
+from jdchat_gateway.reception import (
+    ReceptionCaptureRejected,
+    ReceptionCaptureResponse,
+    ReceptionChatLogBatchIn,
+    list_reception_chatlog_messages,
+    list_reception_chatlog_sessions,
+    normalize_reception_chatlog_event,
+    reception_chatlog_stats,
+    record_reception_chatlog_event,
+    upsert_reception_chatlog_message,
+    upsert_reception_chatlog_session,
+)
 from jdchat_gateway.repositories import (
     capture_stats,
     list_capture_events_recent,
@@ -137,6 +149,58 @@ def register_routes(app: FastAPI) -> FastAPI:
             rejected=rejected,
         )
 
+    @app.post(
+        "/reception/chatlog/events",
+        response_model=ReceptionCaptureResponse,
+        dependencies=[Depends(require_local_token)],
+    )
+    def reception_chatlog_events(
+        batch: ReceptionChatLogBatchIn,
+        settings: Annotated[Settings, Depends(get_settings)],
+    ) -> ReceptionCaptureResponse:
+        accepted = inserted = updated = duplicates = 0
+        rejected: list[ReceptionCaptureRejected] = []
+        conn = connect(settings.database_path)
+        batch_payload = batch.model_dump(by_alias=True, exclude_none=True)
+        try:
+            for event_model in batch.events:
+                event = event_model.model_dump(by_alias=True, exclude_none=True)
+                try:
+                    normalized = normalize_reception_chatlog_event(event, batch=batch_payload)
+                    if not normalized.get("message"):
+                        rejected.append(
+                            ReceptionCaptureRejected(
+                                eventId=normalized["event_id"],
+                                reason="event has no reception chatlog message payload",
+                            )
+                        )
+                        continue
+
+                    with conn:
+                        upsert_reception_chatlog_session(conn, normalized["session"], normalized["message"])
+                        status = upsert_reception_chatlog_message(conn, normalized["message"])
+                        record_reception_chatlog_event(conn, normalized)
+
+                    accepted += 1
+                    if status == "inserted":
+                        inserted += 1
+                    elif status == "updated":
+                        updated += 1
+                    else:
+                        duplicates += 1
+                except Exception as exc:  # noqa: BLE001 - response needs per-event rejection.
+                    rejected.append(ReceptionCaptureRejected(eventId=event.get("eventId"), reason=str(exc)))
+        finally:
+            conn.close()
+
+        return ReceptionCaptureResponse(
+            accepted=accepted,
+            inserted=inserted,
+            updated=updated,
+            duplicates=duplicates,
+            rejected=rejected,
+        )
+
     @app.get("/conversations", dependencies=[Depends(require_local_token)])
     def conversations(
         settings: Annotated[Settings, Depends(get_settings)],
@@ -171,6 +235,49 @@ def register_routes(app: FastAPI) -> FastAPI:
             return {
                 "items": [with_media_public_url(item, settings) for item in items],
             }
+        finally:
+            conn.close()
+
+    @app.get("/reception/chatlog/sessions", dependencies=[Depends(require_local_token)])
+    def reception_chatlog_sessions(
+        settings: Annotated[Settings, Depends(get_settings)],
+        limit: int = 50,
+        q: str | None = None,
+    ) -> dict[str, object]:
+        conn = connect(settings.database_path)
+        try:
+            return {"items": list_reception_chatlog_sessions(conn, min(max(limit, 1), 200), q=q)}
+        finally:
+            conn.close()
+
+    @app.get("/reception/chatlog/sessions/{conversation_key}/messages", dependencies=[Depends(require_local_token)])
+    def reception_chatlog_messages(
+        conversation_key: str,
+        settings: Annotated[Settings, Depends(get_settings)],
+        limit: int = 50,
+        order: str = "desc",
+        before: str | None = None,
+    ) -> dict[str, object]:
+        normalized_order = "asc" if order == "asc" else "desc"
+        conn = connect(settings.database_path)
+        try:
+            return {
+                "items": list_reception_chatlog_messages(
+                    conn,
+                    conversation_key,
+                    min(max(limit, 1), 500),
+                    order=normalized_order,
+                    before=before,
+                )
+            }
+        finally:
+            conn.close()
+
+    @app.get("/reception/chatlog/stats", dependencies=[Depends(require_local_token)])
+    def reception_chatlog_capture_stats(settings: Annotated[Settings, Depends(get_settings)]) -> dict[str, object]:
+        conn = connect(settings.database_path)
+        try:
+            return reception_chatlog_stats(conn)
         finally:
             conn.close()
 
