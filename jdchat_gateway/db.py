@@ -48,6 +48,11 @@ CREATE TABLE IF NOT EXISTS messages (
   content TEXT,
   content_hash TEXT,
   media_url TEXT,
+  media_local_path TEXT,
+  media_mime_type TEXT,
+  media_storage_provider TEXT,
+  media_download_status TEXT,
+  media_download_error TEXT,
   media_width INTEGER,
   media_height INTEGER,
   media_size INTEGER,
@@ -123,4 +128,19 @@ def connect(database_path: str | Path) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
+    ensure_messages_media_columns(conn)
     conn.commit()
+
+
+def ensure_messages_media_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    additions = {
+        "media_local_path": "TEXT",
+        "media_mime_type": "TEXT",
+        "media_storage_provider": "TEXT",
+        "media_download_status": "TEXT",
+        "media_download_error": "TEXT",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")

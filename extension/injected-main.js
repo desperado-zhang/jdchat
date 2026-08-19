@@ -1,6 +1,8 @@
 (() => {
   const SOURCE = "jdchat-capture-main";
   const MESSAGE_TYPE = "jdchat-capture-event";
+  const CONTEXT_TYPE = "jdchat-capture-context";
+  const CONTEXT_INTERVAL_MS = 500;
   const SNAPSHOT_INTERVAL_MS = 5000;
   const MAX_MESSAGES_PER_BATCH = 100;
   const MAX_NETWORK_MESSAGES = 50;
@@ -12,10 +14,11 @@
   const ENABLE_XHR_HOOK = ENABLE_NETWORK_HOOKS && readFlag("captureXhr", true);
   const ENABLE_WEBSOCKET_HOOK = ENABLE_NETWORK_HOOKS && readFlag("captureWebSocket", false);
 
+  let contextTimer = null;
   let snapshotTimer = null;
 
   window.__JDCHAT_CAPTURE_MAIN_READY__ = {
-    version: "0.1.3",
+    version: "0.1.13",
     networkHooksEnabled: ENABLE_NETWORK_HOOKS,
     hooks: {
       fetch: ENABLE_FETCH_HOOK,
@@ -42,11 +45,35 @@
   }
 
   function scheduleSessionSnapshots() {
+    setTimeout(() => emitSessionContext("initial"), 500);
     setTimeout(() => emitSessionSnapshot("initial"), 1500);
-    snapshotTimer = setInterval(() => emitSessionSnapshot("interval"), SNAPSHOT_INTERVAL_MS);
+    contextTimer = setInterval(() => {
+      emitSessionContext("interval");
+    }, CONTEXT_INTERVAL_MS);
+    snapshotTimer = setInterval(() => {
+      emitSessionSnapshot("interval");
+    }, SNAPSHOT_INTERVAL_MS);
     window.addEventListener("beforeunload", () => {
+      if (contextTimer) clearInterval(contextTimer);
       if (snapshotTimer) clearInterval(snapshotTimer);
     });
+  }
+
+  function emitSessionContext(reason) {
+    const session = window.session;
+    if (!session || typeof session !== "object" || !session.customer) return;
+    window.postMessage(
+      {
+        source: SOURCE,
+        type: CONTEXT_TYPE,
+        event: {
+          conversation: safeClone(session.customer),
+          payload: { reason },
+          capturedAt: new Date().toISOString(),
+        },
+      },
+      "*",
+    );
   }
 
   function emitSessionSnapshot(reason) {

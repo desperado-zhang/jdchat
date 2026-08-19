@@ -6,6 +6,7 @@ const DEFAULT_CONFIG = {
   captureFetch: true,
   captureXhr: true,
   captureWebSocket: false,
+  autoScrollHistory: true,
   gatewayUrl: "http://127.0.0.1:8765",
   apiToken: "",
   maxBatchSize: 50,
@@ -15,6 +16,7 @@ const RETRY_ALARM_NAME = "jdchat-flush-retry";
 
 let flushTimer = null;
 let flushing = false;
+let enqueueChain = Promise.resolve();
 
 chrome.runtime.onInstalled.addListener(async () => {
   const { config } = await chrome.storage.local.get(["config"]);
@@ -60,6 +62,12 @@ async function writeQueue(queue) {
 }
 
 async function enqueueEvent(event) {
+  const operation = enqueueChain.then(() => enqueueEventUnlocked(event));
+  enqueueChain = operation.catch(() => undefined);
+  return operation;
+}
+
+async function enqueueEventUnlocked(event) {
   const config = await readConfig();
   if (!config.enabled) return { ok: true, queued: false, disabled: true };
   if (!event || !event.source || !event.eventType) return { ok: false, queued: false, error: "invalid event" };

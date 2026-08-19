@@ -59,28 +59,27 @@ def upsert_conversation(conn: sqlite3.Connection, conversation: dict[str, Any], 
 
 
 def upsert_message(conn: sqlite3.Connection, message: dict[str, Any]) -> str:
-    existing = conn.execute(
-        "SELECT * FROM messages WHERE dedupe_key = ?",
-        (message["dedupe_key"],),
-    ).fetchone()
+    existing = reuse_existing_message_identity(conn, message)
     if existing is None:
         conn.execute(
             """
             INSERT INTO messages (
               dedupe_key, platform, conversation_key, msg_id, mid, local_id, direction,
-              top_type, body_type, content, content_hash, media_url, media_width,
-              media_height, media_size, template_type, template_payload, message_at,
-              client_time, datetime_ms, timestamp_ms, read_flag, state, lang, from_app,
-              from_pin_hash, from_client_type, from_art, to_app, to_pin_hash, source,
-              raw_json, captured_at
+              top_type, body_type, content, content_hash, media_url, media_local_path,
+              media_mime_type, media_storage_provider, media_download_status,
+              media_download_error, media_width, media_height, media_size, template_type,
+              template_payload, message_at, client_time, datetime_ms, timestamp_ms,
+              read_flag, state, lang, from_app, from_pin_hash, from_client_type, from_art,
+              to_app, to_pin_hash, source, raw_json, captured_at
             )
             VALUES (
               :dedupe_key, :platform, :conversation_key, :msg_id, :mid, :local_id, :direction,
-              :top_type, :body_type, :content, :content_hash, :media_url, :media_width,
-              :media_height, :media_size, :template_type, :template_payload, :message_at,
-              :client_time, :datetime_ms, :timestamp_ms, :read_flag, :state, :lang, :from_app,
-              :from_pin_hash, :from_client_type, :from_art, :to_app, :to_pin_hash, :source,
-              :raw_json, :captured_at
+              :top_type, :body_type, :content, :content_hash, :media_url, :media_local_path,
+              :media_mime_type, :media_storage_provider, :media_download_status,
+              :media_download_error, :media_width, :media_height, :media_size, :template_type,
+              :template_payload, :message_at, :client_time, :datetime_ms, :timestamp_ms,
+              :read_flag, :state, :lang, :from_app, :from_pin_hash, :from_client_type,
+              :from_art, :to_app, :to_pin_hash, :source, :raw_json, :captured_at
             )
             """,
             message,
@@ -103,6 +102,11 @@ def upsert_message(conn: sqlite3.Connection, message: dict[str, Any]) -> str:
         "content",
         "content_hash",
         "media_url",
+        "media_local_path",
+        "media_mime_type",
+        "media_storage_provider",
+        "media_download_status",
+        "media_download_error",
         "media_width",
         "media_height",
         "media_size",
@@ -147,6 +151,11 @@ def upsert_message(conn: sqlite3.Connection, message: dict[str, Any]) -> str:
           content = :content,
           content_hash = :content_hash,
           media_url = :media_url,
+          media_local_path = :media_local_path,
+          media_mime_type = :media_mime_type,
+          media_storage_provider = :media_storage_provider,
+          media_download_status = :media_download_status,
+          media_download_error = :media_download_error,
           media_width = :media_width,
           media_height = :media_height,
           media_size = :media_size,
@@ -175,6 +184,47 @@ def upsert_message(conn: sqlite3.Connection, message: dict[str, Any]) -> str:
     return "updated"
 
 
+def reuse_existing_message_identity(conn: sqlite3.Connection, message: dict[str, Any]) -> sqlite3.Row | None:
+    existing = find_existing_message(conn, message)
+    if existing is not None and existing["dedupe_key"] != message["dedupe_key"]:
+        message["dedupe_key"] = existing["dedupe_key"]
+    return existing
+
+
+def find_existing_message(conn: sqlite3.Connection, message: dict[str, Any]) -> sqlite3.Row | None:
+    existing = conn.execute(
+        "SELECT * FROM messages WHERE dedupe_key = ?",
+        (message["dedupe_key"],),
+    ).fetchone()
+    if existing is not None or message.get("source") != "dom":
+        return existing
+
+    return conn.execute(
+        """
+        SELECT *
+        FROM messages
+        WHERE conversation_key = ?
+          AND instr(',' || source || ',', ',dom,') > 0
+          AND direction = ?
+          AND body_type = ?
+          AND COALESCE(content, '') = COALESCE(?, '')
+          AND COALESCE(media_url, '') = COALESCE(?, '')
+          AND COALESCE(json_extract(raw_json, '$.displayTime'), '') =
+              COALESCE(json_extract(?, '$.displayTime'), '')
+        ORDER BY id
+        LIMIT 1
+        """,
+        (
+            message.get("conversation_key"),
+            message.get("direction"),
+            message.get("body_type"),
+            message.get("content"),
+            message.get("media_url"),
+            message.get("raw_json") or "{}",
+        ),
+    ).fetchone()
+
+
 def record_capture_event(conn: sqlite3.Connection, normalized: dict[str, Any]) -> None:
     message = normalized.get("message") or {}
     conn.execute(
@@ -198,34 +248,150 @@ def record_capture_event(conn: sqlite3.Connection, normalized: dict[str, Any]) -
     )
 
 
-def list_conversations(conn: sqlite3.Connection, limit: int) -> list[dict[str, Any]]:
+def list_conversations(
+    conn: sqlite3.Connection,
+    limit: int,
+    *,
+    q: str | None = None,
+    source: str | None = None,
+) -> list[dict[str, Any]]:
+    conditions: list[str] = []
+    params: list[Any] = []
+
+    if q:
+        like = f"%{q.strip()}%"
+        conditions.append(
+            """
+            (
+              c.conversation_key LIKE ?
+              OR c.vender_id LIKE ?
+              OR c.vender_name LIKE ?
+              OR c.customer_app LIKE ?
+              OR c.customer_pin_hash LIKE ?
+              OR c.customer_name LIKE ?
+              OR c.session_type LIKE ?
+              OR c.last_msg_id LIKE ?
+            )
+            """
+        )
+        params.extend([like] * 8)
+
+    if source:
+        conditions.append(
+            """
+            EXISTS (
+              SELECT 1
+              FROM messages source_messages
+              WHERE source_messages.conversation_key = c.conversation_key
+                AND instr(',' || source_messages.source || ',', ',' || ? || ',') > 0
+            )
+            """
+        )
+        params.append(source)
+
+    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = conn.execute(
-        """
-        SELECT conversation_key, vender_id, vender_name, customer_app, customer_pin_hash,
-               customer_name, session_type, last_msg_id, last_mid, last_message_at,
-               unread_count, updated_at
-        FROM conversations
-        ORDER BY COALESCE(last_message_at, updated_at) DESC
+        f"""
+        SELECT c.conversation_key, c.vender_id, c.vender_name, c.customer_app, c.customer_pin_hash,
+               c.customer_name, c.session_type, c.last_msg_id, c.last_mid, c.last_message_at,
+               c.unread_count, c.updated_at, COUNT(m.id) AS message_count,
+               MAX(m.captured_at) AS last_captured_at, GROUP_CONCAT(DISTINCT m.source) AS sources
+        FROM conversations c
+        LEFT JOIN messages m ON m.conversation_key = c.conversation_key
+        {where_sql}
+        GROUP BY c.conversation_key
+        ORDER BY COALESCE(c.last_message_at, MAX(m.captured_at), c.updated_at) DESC
         LIMIT ?
-        """,
-        (limit,),
+        """
+        ,
+        (*params, limit),
     ).fetchall()
     return [dict(row) for row in rows]
 
 
-def list_messages(conn: sqlite3.Connection, conversation_key: str, limit: int) -> list[dict[str, Any]]:
+def list_messages(
+    conn: sqlite3.Connection,
+    conversation_key: str,
+    limit: int,
+    *,
+    order: str = "desc",
+    before: str | None = None,
+) -> list[dict[str, Any]]:
+    order_sql = "ASC" if order == "asc" else "DESC"
+    id_order_sql = "ASC" if order == "asc" else "DESC"
+    conditions = ["conversation_key = ?"]
+    params: list[Any] = [conversation_key]
+    if before:
+        conditions.append("COALESCE(message_at, captured_at) < ?")
+        params.append(before)
+
     rows = conn.execute(
-        """
-        SELECT dedupe_key, msg_id, mid, direction, top_type, body_type, content,
-               media_url, message_at, source, captured_at, updated_at
+        f"""
+        SELECT dedupe_key, msg_id, mid, local_id, direction, top_type, body_type, content,
+               media_url, media_local_path, media_mime_type, media_storage_provider,
+               media_download_status, media_download_error, media_width, media_height,
+               media_size, template_type, template_payload, message_at, client_time,
+               datetime_ms, timestamp_ms, read_flag, state, lang, from_app, to_app,
+               source, captured_at, updated_at
         FROM messages
-        WHERE conversation_key = ?
-        ORDER BY COALESCE(message_at, captured_at) DESC
+        WHERE {" AND ".join(conditions)}
+        ORDER BY COALESCE(message_at, captured_at) {order_sql}, id {id_order_sql}
         LIMIT ?
         """,
-        (conversation_key, limit),
+        (*params, limit),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def capture_stats(conn: sqlite3.Connection) -> dict[str, Any]:
+    totals = conn.execute(
+        """
+        SELECT
+          (SELECT COUNT(*) FROM conversations) AS conversations,
+          (SELECT COUNT(*) FROM messages) AS messages,
+          (SELECT COUNT(*) FROM capture_events) AS capture_events,
+          (SELECT COUNT(*) FROM audit_logs) AS audit_logs
+        """
+    ).fetchone()
+    latest_message = conn.execute(
+        """
+        SELECT conversation_key, direction, body_type, source, message_at, captured_at
+        FROM messages
+        ORDER BY COALESCE(message_at, captured_at) DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    latest_event = conn.execute(
+        """
+        SELECT source, event_type, conversation_key, captured_at, received_at
+        FROM capture_events
+        ORDER BY received_at DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    event_sources = conn.execute(
+        """
+        SELECT source, COUNT(*) AS count
+        FROM capture_events
+        GROUP BY source
+        ORDER BY count DESC, source
+        """
+    ).fetchall()
+    message_types = conn.execute(
+        """
+        SELECT direction, body_type, COUNT(*) AS count
+        FROM messages
+        GROUP BY direction, body_type
+        ORDER BY count DESC, direction, body_type
+        """
+    ).fetchall()
+    return {
+        "totals": dict(totals) if totals else {},
+        "latest_message": dict(latest_message) if latest_message else None,
+        "latest_event": dict(latest_event) if latest_event else None,
+        "event_sources": [dict(row) for row in event_sources],
+        "message_types": [dict(row) for row in message_types],
+    }
 
 
 def list_capture_events_recent(conn: sqlite3.Connection, limit: int) -> list[dict[str, Any]]:

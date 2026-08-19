@@ -1,0 +1,1169 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>jdchat viewer</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f7f9;
+        --surface: #ffffff;
+        --surface-muted: #f1f5f9;
+        --surface-active: #e8f1ff;
+        --border: #d9e0ea;
+        --border-strong: #aeb8c7;
+        --text: #142033;
+        --muted: #667085;
+        --subtle: #98a2b3;
+        --primary: #2563eb;
+        --primary-weak: #dbeafe;
+        --success: #0f766e;
+        --warning: #b45309;
+        --danger: #b42318;
+        --customer: #ffffff;
+        --waiter: #e9f5ee;
+        --system: #eef2f7;
+        --radius: 8px;
+        --shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        font-size: 14px;
+        letter-spacing: 0;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .app {
+        display: grid;
+        grid-template-columns: 360px minmax(0, 1fr) 320px;
+        height: 100vh;
+        min-height: 720px;
+      }
+
+      .sidebar,
+      .detail,
+      .inspector {
+        min-height: 0;
+        border-right: 1px solid var(--border);
+        background: var(--surface);
+      }
+
+      .detail {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        background: #fbfcfe;
+      }
+
+      .inspector {
+        border-right: 0;
+        background: #fafbfc;
+      }
+
+      .toolbar,
+      .detail-header,
+      .inspector-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 64px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .toolbar {
+        flex-wrap: wrap;
+        align-content: center;
+      }
+
+      .title-group {
+        min-width: 0;
+        flex: 1;
+      }
+
+      .title {
+        margin: 0;
+        font-size: 16px;
+        line-height: 22px;
+        font-weight: 650;
+      }
+
+      .subtitle {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 16px;
+      }
+
+      .input,
+      .select {
+        height: 34px;
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: #fff;
+        color: var(--text);
+        outline: 0;
+      }
+
+      .input {
+        padding: 0 10px;
+      }
+
+      .select {
+        padding: 0 28px 0 10px;
+      }
+
+      .input:focus,
+      .select:focus,
+      .button:focus-visible,
+      .conversation:focus-visible,
+      .toggle:focus-visible {
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
+      }
+
+      .search-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 112px;
+        width: 100%;
+        gap: 8px;
+      }
+
+      .token-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        width: 100%;
+        gap: 8px;
+      }
+
+      .button,
+      .toggle {
+        height: 34px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: #fff;
+        color: var(--text);
+        padding: 0 12px;
+        white-space: nowrap;
+      }
+
+      .button.primary {
+        border-color: var(--primary);
+        background: var(--primary);
+        color: #fff;
+      }
+
+      .button.ghost {
+        background: transparent;
+      }
+
+      .toggle[aria-pressed="true"] {
+        border-color: var(--primary);
+        background: var(--primary-weak);
+        color: #174ea6;
+      }
+
+      .banner {
+        display: none;
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: 6px;
+        background: #fff4ed;
+        color: var(--danger);
+        line-height: 18px;
+      }
+
+      .banner.visible {
+        display: block;
+      }
+
+      .list {
+        height: calc(100vh - 146px);
+        min-height: 560px;
+        overflow: auto;
+      }
+
+      .conversation {
+        display: grid;
+        width: 100%;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 6px 10px;
+        padding: 12px 16px;
+        border: 0;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+        color: inherit;
+        text-align: left;
+      }
+
+      .conversation:hover {
+        background: #f8fafc;
+      }
+
+      .conversation[aria-selected="true"] {
+        background: var(--surface-active);
+        box-shadow: inset 3px 0 0 var(--primary);
+      }
+
+      .conversation-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 650;
+      }
+
+      .conversation-meta,
+      .conversation-key,
+      .time,
+      .muted {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 16px;
+      }
+
+      .conversation-meta,
+      .conversation-key {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .badge-line {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        grid-column: 1 / -1;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        max-width: 150px;
+        height: 20px;
+        padding: 0 7px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--surface-muted);
+        color: #344054;
+        font-size: 12px;
+        line-height: 18px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .badge.source-session {
+        background: #eef4ff;
+        border-color: #c7d7fe;
+        color: #3538cd;
+      }
+
+      .badge.source-dom {
+        background: #ecfdf3;
+        border-color: #abefc6;
+        color: #067647;
+      }
+
+      .badge.source-websocket,
+      .badge.source-xhr,
+      .badge.source-fetch {
+        background: #fff7ed;
+        border-color: #fed7aa;
+        color: #9a3412;
+      }
+
+      .messages {
+        min-height: 0;
+        overflow: auto;
+        padding: 16px 22px 28px;
+      }
+
+      .day-separator {
+        display: flex;
+        justify-content: center;
+        margin: 12px 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .message {
+        display: flex;
+        margin: 8px 0;
+      }
+
+      .message.customer {
+        justify-content: flex-start;
+      }
+
+      .message.waiter {
+        justify-content: flex-end;
+      }
+
+      .message.system,
+      .message.unknown {
+        justify-content: center;
+      }
+
+      .bubble {
+        max-width: min(680px, 76%);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 9px 11px;
+        background: var(--customer);
+        box-shadow: var(--shadow);
+      }
+
+      .message.waiter .bubble {
+        background: var(--waiter);
+        border-color: #badfca;
+      }
+
+      .message.system .bubble,
+      .message.unknown .bubble {
+        max-width: 86%;
+        background: var(--system);
+        box-shadow: none;
+      }
+
+      .bubble-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 5px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 16px;
+      }
+
+      .bubble-text {
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+        line-height: 20px;
+      }
+
+      .media-box,
+      .template-box {
+        display: grid;
+        gap: 4px;
+        min-width: 180px;
+        border: 1px dashed var(--border-strong);
+        border-radius: 6px;
+        padding: 9px;
+        background: rgba(255, 255, 255, 0.7);
+      }
+
+      .media-image {
+        display: block;
+        max-width: min(360px, 68vw);
+        max-height: 260px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        object-fit: contain;
+        background: #ffffff;
+      }
+
+      .media-link {
+        color: var(--accent);
+        font-size: 12px;
+        text-decoration: none;
+      }
+
+      .media-link:hover {
+        text-decoration: underline;
+      }
+
+      .empty-state,
+      .loading-state {
+        display: grid;
+        place-items: center;
+        height: 100%;
+        padding: 24px;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      .inspector-body {
+        height: calc(100vh - 64px);
+        min-height: 656px;
+        overflow: auto;
+        padding: 14px 16px 24px;
+      }
+
+      .section {
+        padding: 12px 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .section:first-child {
+        padding-top: 0;
+      }
+
+      .section-title {
+        margin: 0 0 10px;
+        font-size: 13px;
+        line-height: 18px;
+        font-weight: 650;
+      }
+
+      .metric-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .metric {
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: #fff;
+        padding: 9px;
+      }
+
+      .metric-value {
+        font-size: 19px;
+        line-height: 24px;
+        font-weight: 700;
+      }
+
+      .metric-label {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 16px;
+      }
+
+      .kv {
+        display: grid;
+        grid-template-columns: 86px minmax(0, 1fr);
+        gap: 7px 8px;
+        font-size: 12px;
+        line-height: 17px;
+      }
+
+      .kv dt {
+        color: var(--muted);
+      }
+
+      .kv dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .event-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .event-item {
+        display: grid;
+        gap: 4px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: #fff;
+        padding: 9px;
+      }
+
+      @media (max-width: 1180px) {
+        .app {
+          grid-template-columns: 340px minmax(0, 1fr);
+        }
+
+        .inspector {
+          display: none;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .app {
+          display: block;
+          height: auto;
+          min-height: 100vh;
+        }
+
+        .sidebar,
+        .detail {
+          border-right: 0;
+        }
+
+        .list {
+          height: 38vh;
+          min-height: 280px;
+        }
+
+        .detail {
+          min-height: 62vh;
+        }
+
+        .messages {
+          min-height: 54vh;
+          padding: 12px;
+        }
+
+        .bubble {
+          max-width: 92%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <aside class="sidebar">
+        <div class="toolbar">
+          <div class="title-group">
+            <h1 class="title">jdchat</h1>
+            <div class="subtitle" id="healthText">health pending</div>
+          </div>
+          <button class="button" id="refreshButton" type="button">刷新</button>
+          <div class="search-row">
+            <input class="input" id="searchInput" type="search" placeholder="搜索客户、店铺、会话 key" />
+            <select class="select" id="sourceSelect" aria-label="来源过滤">
+              <option value="">全部来源</option>
+              <option value="session">session</option>
+              <option value="dom">dom</option>
+              <option value="websocket">websocket</option>
+              <option value="xhr">xhr</option>
+              <option value="fetch">fetch</option>
+            </select>
+          </div>
+          <form class="token-row" id="tokenForm">
+            <input class="input" id="tokenInput" type="password" placeholder="本机 API token" autocomplete="off" />
+            <button class="button" id="saveTokenButton" type="button">应用</button>
+          </form>
+          <div class="banner" id="banner" role="status"></div>
+        </div>
+        <div class="list" id="conversationList" role="listbox" aria-label="客户会话"></div>
+      </aside>
+
+      <section class="detail">
+        <header class="detail-header">
+          <div class="title-group">
+            <h2 class="title" id="conversationTitle">未选择会话</h2>
+            <div class="subtitle" id="conversationMeta">选择左侧客户查看聊天详情</div>
+          </div>
+          <button class="toggle" id="hideContentButton" type="button" aria-pressed="false">隐藏正文</button>
+          <button class="button ghost" id="copyKeyButton" type="button" disabled>复制 key</button>
+        </header>
+        <div class="messages" id="messageList" aria-live="polite">
+          <div class="empty-state">暂无会话</div>
+        </div>
+      </section>
+
+      <aside class="inspector">
+        <header class="inspector-header">
+          <div class="title-group">
+            <h2 class="title">采集状态</h2>
+            <div class="subtitle" id="statsSubtitle">等待数据</div>
+          </div>
+        </header>
+        <div class="inspector-body">
+          <section class="section">
+            <h3 class="section-title">数据量</h3>
+            <div class="metric-grid" id="metricGrid"></div>
+          </section>
+          <section class="section">
+            <h3 class="section-title">最近事件</h3>
+            <dl class="kv" id="latestEvent"></dl>
+          </section>
+          <section class="section">
+            <h3 class="section-title">来源分布</h3>
+            <div class="badge-line" id="sourceStats"></div>
+          </section>
+          <section class="section">
+            <h3 class="section-title">采集记录</h3>
+            <div class="event-list" id="recentEvents"></div>
+          </section>
+        </div>
+      </aside>
+    </main>
+
+    <script>
+      const state = {
+        conversations: [],
+        selectedKey: "",
+        messages: [],
+        token: sessionStorage.getItem("jdchat.viewer.token") || "",
+        q: "",
+        source: "",
+        hideContent: false,
+        loadingConversations: false,
+        loadingMessages: false,
+      };
+
+      const el = {
+        healthText: document.querySelector("#healthText"),
+        refreshButton: document.querySelector("#refreshButton"),
+        searchInput: document.querySelector("#searchInput"),
+        sourceSelect: document.querySelector("#sourceSelect"),
+        tokenForm: document.querySelector("#tokenForm"),
+        tokenInput: document.querySelector("#tokenInput"),
+        saveTokenButton: document.querySelector("#saveTokenButton"),
+        banner: document.querySelector("#banner"),
+        conversationList: document.querySelector("#conversationList"),
+        conversationTitle: document.querySelector("#conversationTitle"),
+        conversationMeta: document.querySelector("#conversationMeta"),
+        hideContentButton: document.querySelector("#hideContentButton"),
+        copyKeyButton: document.querySelector("#copyKeyButton"),
+        messageList: document.querySelector("#messageList"),
+        statsSubtitle: document.querySelector("#statsSubtitle"),
+        metricGrid: document.querySelector("#metricGrid"),
+        latestEvent: document.querySelector("#latestEvent"),
+        sourceStats: document.querySelector("#sourceStats"),
+        recentEvents: document.querySelector("#recentEvents"),
+      };
+
+      el.tokenInput.value = state.token;
+      el.refreshButton.addEventListener("click", () => refreshAll());
+      el.tokenForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        applyToken();
+      });
+      el.saveTokenButton.addEventListener("click", () => applyToken());
+
+      function applyToken() {
+        state.token = el.tokenInput.value.trim();
+        if (state.token) {
+          sessionStorage.setItem("jdchat.viewer.token", state.token);
+        } else {
+          sessionStorage.removeItem("jdchat.viewer.token");
+        }
+        refreshAll();
+      }
+      el.searchInput.addEventListener("input", debounce(() => {
+        state.q = el.searchInput.value.trim();
+        loadConversations();
+      }, 220));
+      el.sourceSelect.addEventListener("change", () => {
+        state.source = el.sourceSelect.value;
+        loadConversations();
+      });
+      el.hideContentButton.addEventListener("click", () => {
+        state.hideContent = !state.hideContent;
+        el.hideContentButton.setAttribute("aria-pressed", String(state.hideContent));
+        renderMessages();
+      });
+      el.copyKeyButton.addEventListener("click", async () => {
+        if (!state.selectedKey || !navigator.clipboard) return;
+        await navigator.clipboard.writeText(state.selectedKey);
+      });
+
+      refreshAll();
+
+      async function refreshAll() {
+        clearBanner();
+        await Promise.all([loadHealth(), loadStats(), loadRecentEvents(), loadConversations()]);
+        if (state.selectedKey) {
+          await loadMessages(state.selectedKey);
+        }
+      }
+
+      async function loadHealth() {
+        try {
+          const data = await apiFetch("/health", { auth: false });
+          el.healthText.textContent = data.ok ? `local gateway ${data.version}` : "gateway unavailable";
+        } catch (error) {
+          el.healthText.textContent = "gateway unavailable";
+        }
+      }
+
+      async function loadConversations() {
+        state.loadingConversations = true;
+        renderConversations();
+        try {
+          const params = new URLSearchParams({ limit: "100" });
+          if (state.q) params.set("q", state.q);
+          if (state.source) params.set("source", state.source);
+          const data = await apiFetch(`/conversations?${params.toString()}`);
+          state.conversations = data.items || [];
+          if (!state.selectedKey && state.conversations.length) {
+            state.selectedKey = state.conversations[0].conversation_key;
+            await loadMessages(state.selectedKey);
+          }
+        } catch (error) {
+          showError(error);
+          state.conversations = [];
+        } finally {
+          state.loadingConversations = false;
+          renderConversations();
+        }
+      }
+
+      async function loadMessages(conversationKey) {
+        state.loadingMessages = true;
+        state.selectedKey = conversationKey;
+        renderConversations();
+        renderMessages();
+        try {
+          const data = await apiFetch(
+            `/conversations/${encodeURIComponent(conversationKey)}/messages?limit=300&order=asc`,
+          );
+          state.messages = data.items || [];
+        } catch (error) {
+          showError(error);
+          state.messages = [];
+        } finally {
+          state.loadingMessages = false;
+          renderMessages();
+          renderConversationHeader();
+        }
+      }
+
+      async function loadStats() {
+        try {
+          const data = await apiFetch("/capture/stats");
+          renderStats(data);
+        } catch (error) {
+          renderStats(null);
+          if (error.status === 401) showError(error);
+        }
+      }
+
+      async function loadRecentEvents() {
+        try {
+          const data = await apiFetch("/capture/events/recent?limit=12");
+          renderRecentEvents(data.items || []);
+        } catch (error) {
+          renderRecentEvents([]);
+          if (error.status === 401) showError(error);
+        }
+      }
+
+      async function apiFetch(path, options = {}) {
+        const headers = {};
+        if (options.auth !== false && state.token) {
+          headers.Authorization = `Bearer ${state.token}`;
+        }
+        const response = await fetch(path, { headers });
+        if (response.status === 401) {
+          const error = new Error("本机 API token 无效或缺失");
+          error.status = 401;
+          throw error;
+        }
+        if (!response.ok) {
+          const error = new Error(`请求失败 ${response.status}`);
+          error.status = response.status;
+          throw error;
+        }
+        return response.json();
+      }
+
+      function renderConversations() {
+        el.conversationList.replaceChildren();
+        if (state.loadingConversations) {
+          el.conversationList.appendChild(emptyNode("加载会话中"));
+          return;
+        }
+        if (!state.conversations.length) {
+          el.conversationList.appendChild(emptyNode("暂无客户会话"));
+          return;
+        }
+        const fragment = document.createDocumentFragment();
+        for (const item of state.conversations) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "conversation";
+          button.setAttribute("role", "option");
+          button.setAttribute("aria-selected", String(item.conversation_key === state.selectedKey));
+          button.addEventListener("click", () => loadMessages(item.conversation_key));
+
+          const title = document.createElement("div");
+          title.className = "conversation-title";
+          title.textContent = conversationName(item);
+
+          const time = document.createElement("div");
+          time.className = "time";
+          time.textContent = formatShortTime(item.last_message_at || item.last_captured_at || item.updated_at);
+
+          const meta = document.createElement("div");
+          meta.className = "conversation-meta";
+          meta.textContent = conversationMeta(item);
+
+          const key = document.createElement("div");
+          key.className = "conversation-key";
+          key.textContent = shortKey(item.conversation_key);
+
+          const badges = document.createElement("div");
+          badges.className = "badge-line";
+          for (const source of splitSources(item.sources)) badges.appendChild(sourceBadge(source));
+          badges.appendChild(textBadge(`${item.message_count || 0} 条`));
+
+          button.append(title, time, meta, key, badges);
+          fragment.appendChild(button);
+        }
+        el.conversationList.appendChild(fragment);
+      }
+
+      function renderConversationHeader() {
+        const item = selectedConversation();
+        if (!item) {
+          el.conversationTitle.textContent = "未选择会话";
+          el.conversationMeta.textContent = "选择左侧客户查看聊天详情";
+          el.copyKeyButton.disabled = true;
+          return;
+        }
+        el.conversationTitle.textContent = conversationName(item);
+        el.conversationMeta.textContent = `${conversationMeta(item)} · ${shortKey(item.conversation_key)}`;
+        el.copyKeyButton.disabled = false;
+      }
+
+      function renderMessages() {
+        renderConversationHeader();
+        el.messageList.replaceChildren();
+        if (state.loadingMessages) {
+          el.messageList.appendChild(emptyNode("加载消息中"));
+          return;
+        }
+        if (!state.selectedKey) {
+          el.messageList.appendChild(emptyNode("暂无会话"));
+          return;
+        }
+        if (!state.messages.length) {
+          el.messageList.appendChild(emptyNode("暂无消息"));
+          return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        let lastDay = "";
+        for (const item of state.messages) {
+          const day = formatDay(item.message_at || item.captured_at);
+          if (day && day !== lastDay) {
+            lastDay = day;
+            const separator = document.createElement("div");
+            separator.className = "day-separator";
+            separator.textContent = day;
+            fragment.appendChild(separator);
+          }
+          fragment.appendChild(messageNode(item));
+        }
+        el.messageList.appendChild(fragment);
+        el.messageList.scrollTop = el.messageList.scrollHeight;
+      }
+
+      function messageNode(item) {
+        const directionClass =
+          item.direction === "seller_or_waiter"
+            ? "waiter"
+            : item.direction === "customer_or_external"
+              ? "customer"
+              : item.direction === "system"
+                ? "system"
+                : "unknown";
+        const row = document.createElement("article");
+        row.className = `message ${directionClass}`;
+
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+
+        const meta = document.createElement("div");
+        meta.className = "bubble-meta";
+        meta.append(
+          textSpan(directionLabel(item.direction)),
+          textSpan(item.body_type || item.top_type || "unknown"),
+          textSpan(formatShortTime(item.message_at || item.captured_at)),
+        );
+        for (const source of splitSources(item.source)) meta.appendChild(sourceBadge(source));
+
+        bubble.appendChild(meta);
+        bubble.appendChild(messageBody(item));
+        row.appendChild(bubble);
+        return row;
+      }
+
+      function messageBody(item) {
+        if (item.body_type === "image" || item.media_url) {
+          const box = document.createElement("div");
+          box.className = "media-box";
+          box.appendChild(textSpan("图片消息"));
+          const imageUrl = item.media_local_url || item.media_url;
+          if (state.hideContent) {
+            box.appendChild(mutedText("[图片已隐藏]"));
+          } else if (imageUrl) {
+            const image = document.createElement("img");
+            image.className = "media-image";
+            image.loading = "lazy";
+            image.decoding = "async";
+            image.alt = item.content || "聊天图片";
+            image.src = imageUrl;
+            box.appendChild(image);
+
+            const link = document.createElement("a");
+            link.className = "media-link";
+            link.href = imageUrl;
+            link.target = "_blank";
+            link.rel = "noreferrer";
+            link.textContent = item.media_local_url ? "打开本地图片" : "打开原图";
+            box.appendChild(link);
+          }
+          const size = [item.media_width, item.media_height].filter(Boolean).join(" x ");
+          if (size) box.appendChild(mutedText(size));
+          if (item.media_download_status && item.media_download_status !== "saved") {
+            box.appendChild(mutedText(`缓存状态：${item.media_download_status}`));
+          }
+          const host = mediaHost(item.media_url);
+          if (host) box.appendChild(mutedText(host));
+          return box;
+        }
+
+        if (item.body_type === "template2") {
+          const box = document.createElement("div");
+          box.className = "template-box";
+          box.appendChild(textSpan(item.template_type || "卡片消息"));
+          if (item.content && !state.hideContent) box.appendChild(mutedText(item.content));
+          if (state.hideContent) box.appendChild(mutedText("[已隐藏]"));
+          return box;
+        }
+
+        const text = document.createElement("div");
+        text.className = "bubble-text";
+        if (state.hideContent && item.content) {
+          text.textContent = "[已隐藏]";
+        } else {
+          text.textContent = item.content || nonTextLabel(item);
+        }
+        return text;
+      }
+
+      function renderStats(data) {
+        el.metricGrid.replaceChildren();
+        el.latestEvent.replaceChildren();
+        el.sourceStats.replaceChildren();
+        if (!data) {
+          el.statsSubtitle.textContent = "无状态数据";
+          return;
+        }
+        const totals = data.totals || {};
+        el.statsSubtitle.textContent = data.latest_event
+          ? `最近接收 ${formatShortTime(data.latest_event.received_at)}`
+          : "暂无采集事件";
+        for (const [label, value] of [
+          ["会话", totals.conversations],
+          ["消息", totals.messages],
+          ["事件", totals.capture_events],
+          ["审计", totals.audit_logs],
+        ]) {
+          el.metricGrid.appendChild(metricNode(label, value || 0));
+        }
+        if (data.latest_event) {
+          appendKv(el.latestEvent, "来源", data.latest_event.source || "-");
+          appendKv(el.latestEvent, "类型", data.latest_event.event_type || "-");
+          appendKv(el.latestEvent, "接收", formatShortTime(data.latest_event.received_at));
+          appendKv(el.latestEvent, "会话", shortKey(data.latest_event.conversation_key));
+        }
+        for (const item of data.event_sources || []) {
+          el.sourceStats.appendChild(textBadge(`${item.source} ${item.count}`));
+        }
+      }
+
+      function renderRecentEvents(items) {
+        el.recentEvents.replaceChildren();
+        if (!items.length) {
+          el.recentEvents.appendChild(mutedText("暂无记录"));
+          return;
+        }
+        for (const item of items) {
+          const node = document.createElement("div");
+          node.className = "event-item";
+          const line = document.createElement("div");
+          line.className = "badge-line";
+          line.append(sourceBadge(item.source), textBadge(item.event_type || "event"));
+          if (item.active_sidebar_tab) line.append(textBadge(item.active_sidebar_tab));
+          node.append(line);
+          const meta = document.createElement("div");
+          meta.className = "muted";
+          meta.textContent = `${formatShortTime(item.received_at)} · ${shortKey(item.conversation_key)}`;
+          node.appendChild(meta);
+          if (item.history_list_visible !== null && item.history_list_visible !== undefined) {
+            const ctx = document.createElement("div");
+            ctx.className = "muted";
+            ctx.textContent = `history=${item.history_list_visible} messages=${item.message_node_count || 0}`;
+            node.appendChild(ctx);
+          }
+          el.recentEvents.appendChild(node);
+        }
+      }
+
+      function selectedConversation() {
+        return state.conversations.find((item) => item.conversation_key === state.selectedKey);
+      }
+
+      function conversationName(item) {
+        if (item.customer_name) return item.customer_name;
+        if (item.customer_pin_hash) return `客户 ${item.customer_pin_hash.slice(0, 10)}`;
+        if (item.customer_app || item.session_type) return `${item.customer_app || "unknown"} / ${item.session_type || "-"}`;
+        return `会话 ${shortKey(item.conversation_key)}`;
+      }
+
+      function conversationMeta(item) {
+        const vender = item.vender_name || item.vender_id || "未知店铺";
+        const session = item.session_type || "未知类型";
+        return `${vender} · ${session}`;
+      }
+
+      function sourceBadge(source) {
+        const badge = textBadge(source || "unknown");
+        badge.classList.add(`source-${source || "unknown"}`);
+        return badge;
+      }
+
+      function textBadge(text) {
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = text;
+        return badge;
+      }
+
+      function textSpan(text) {
+        const span = document.createElement("span");
+        span.textContent = text || "-";
+        return span;
+      }
+
+      function mutedText(text) {
+        const span = document.createElement("span");
+        span.className = "muted";
+        span.textContent = text || "-";
+        return span;
+      }
+
+      function emptyNode(text) {
+        const node = document.createElement("div");
+        node.className = "empty-state";
+        node.textContent = text;
+        return node;
+      }
+
+      function metricNode(label, value) {
+        const node = document.createElement("div");
+        node.className = "metric";
+        const metricValue = document.createElement("div");
+        metricValue.className = "metric-value";
+        metricValue.textContent = String(value);
+        const metricLabel = document.createElement("div");
+        metricLabel.className = "metric-label";
+        metricLabel.textContent = label;
+        node.append(metricValue, metricLabel);
+        return node;
+      }
+
+      function appendKv(parent, key, value) {
+        const dt = document.createElement("dt");
+        dt.textContent = key;
+        const dd = document.createElement("dd");
+        dd.textContent = value || "-";
+        parent.append(dt, dd);
+      }
+
+      function splitSources(value) {
+        return Array.from(
+          new Set(
+            String(value || "")
+              .split(",")
+              .map((item) => item.trim())
+              .filter(Boolean),
+          ),
+        );
+      }
+
+      function shortKey(value) {
+        if (!value) return "-";
+        return String(value).slice(0, 12);
+      }
+
+      function directionLabel(value) {
+        if (value === "customer_or_external") return "客户";
+        if (value === "seller_or_waiter") return "客服";
+        if (value === "system") return "系统";
+        return "未知";
+      }
+
+      function nonTextLabel(item) {
+        if (item.body_type) return `[${item.body_type}]`;
+        return "[非文本消息]";
+      }
+
+      function mediaHost(value) {
+        if (!value) return "";
+        try {
+          return new URL(value).host;
+        } catch (error) {
+          return "";
+        }
+      }
+
+      function formatShortTime(value) {
+        const date = parseDate(value);
+        if (!date) return "-";
+        return new Intl.DateTimeFormat("zh-CN", {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        }).format(date);
+      }
+
+      function formatDay(value) {
+        const date = parseDate(value);
+        if (!date) return "";
+        return new Intl.DateTimeFormat("zh-CN", {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).format(date);
+      }
+
+      function parseDate(value) {
+        if (!value) return null;
+        const text = String(value);
+        const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(text)
+          ? `${text.replace(" ", "T")}Z`
+          : text;
+        const date = new Date(normalized);
+        return Number.isNaN(date.getTime()) ? null : date;
+      }
+
+      function showError(error) {
+        el.banner.textContent = error && error.message ? error.message : String(error);
+        el.banner.classList.add("visible");
+      }
+
+      function clearBanner() {
+        el.banner.textContent = "";
+        el.banner.classList.remove("visible");
+      }
+
+      function debounce(fn, delay) {
+        let timer = 0;
+        return (...args) => {
+          window.clearTimeout(timer);
+          timer = window.setTimeout(() => fn(...args), delay);
+        };
+      }
+    </script>
+  </body>
+</html>

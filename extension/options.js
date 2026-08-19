@@ -6,6 +6,7 @@ const DEFAULT_CONFIG = {
   captureFetch: true,
   captureXhr: true,
   captureWebSocket: false,
+  autoScrollHistory: true,
   gatewayUrl: "http://127.0.0.1:8765",
   apiToken: "",
   maxBatchSize: 50,
@@ -20,6 +21,7 @@ const CHECKBOX_IDS = [
   "captureFetch",
   "captureXhr",
   "captureWebSocket",
+  "autoScrollHistory",
 ];
 
 document.addEventListener("DOMContentLoaded", init);

@@ -58,3 +58,54 @@ def test_raw_json_redacts_sensitive_values() -> None:
     raw = json.loads(normalized["message"]["raw_json"])
     assert raw["access_token"]["redacted"] is True
     assert raw["from"]["pin"]["redacted"] is True
+
+
+def test_session_customer_snapshot_unifies_customer_and_waiter_messages() -> None:
+    customer_snapshot = {
+        "venderId": "shop-1",
+        "venderName": "shop",
+        "app": "im.customer",
+        "pin": "customer-pin",
+        "name": "Alpha",
+        "sessionType": "chat",
+    }
+    customer_message = normalize_capture_event(
+        {
+            "eventId": "evt-customer",
+            "source": "session",
+            "eventType": "message",
+            "conversation": customer_snapshot,
+            "message": {
+                "id": "msg-customer",
+                "mid": 10,
+                "type": "chat_message",
+                "timestamp": 1787111432988,
+                "body": {"type": "text", "content": "customer says hello"},
+                "from": {"app": "im.customer", "pin": "customer-pin"},
+                "to": {"app": "im.waiter", "pin": "waiter-pin"},
+            },
+        }
+    )
+    waiter_message = normalize_capture_event(
+        {
+            "eventId": "evt-waiter",
+            "source": "session",
+            "eventType": "message",
+            "conversation": customer_snapshot,
+            "message": {
+                "id": "msg-waiter",
+                "mid": 11,
+                "type": "chat_message",
+                "timestamp": 1787111433988,
+                "body": {"type": "text", "content": "waiter replies"},
+                "from": {"app": "im.waiter", "pin": "waiter-pin"},
+                "to": {"app": "im.customer", "pin": "customer-pin"},
+            },
+        }
+    )
+
+    assert customer_message["conversation"]["conversation_key"] == waiter_message["conversation"]["conversation_key"]
+    assert customer_message["conversation"]["customer_app"] == "im.customer"
+    assert customer_message["conversation"]["customer_name"] == "Alpha"
+    assert customer_message["message"]["direction"] == "customer_or_external"
+    assert waiter_message["message"]["direction"] == "seller_or_waiter"

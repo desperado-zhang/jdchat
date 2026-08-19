@@ -112,8 +112,8 @@ def normalize_conversation(
 
     seller_app = pick(conversation, "seller_app", "sellerApp")
     seller_pin = pick(conversation, "seller_pin", "sellerPin")
-    customer_app = pick(conversation, "customer_app", "customerApp") or pick(customer, "app")
-    customer_pin = pick(conversation, "customer_pin", "customerPin") or pick(customer, "pin")
+    customer_app = pick(conversation, "customer_app", "customerApp", "app") or pick(customer, "app")
+    customer_pin = pick(conversation, "customer_pin", "customerPin", "pin") or pick(customer, "pin")
 
     if not seller_app and customer_app:
         if from_party.get("app") and from_party.get("app") != customer_app:
@@ -153,7 +153,7 @@ def normalize_conversation(
         "seller_pin_hash": seller_pin_hash,
         "customer_app": customer_app,
         "customer_pin_hash": customer_pin_hash,
-        "customer_name": pick(conversation, "customer_name", "customerName") or pick(customer, "name"),
+        "customer_name": pick(conversation, "customer_name", "customerName", "name") or pick(customer, "name"),
         "session_type": session_type,
         "last_read_mid": to_int(pick(conversation, "last_read_mid", "lastReadMid") or pick(customer, "lastReadMid")),
         "unread_count": to_int(pick(conversation, "unread_count", "unreadCount") or pick(customer, "unreadCount")),
@@ -194,20 +194,28 @@ def normalize_message(
     content = pick(body, "content") or pick(message, "content", "msg", "text")
     if content is not None:
         content = str(content)
+    media_url = pick(body, "url", "mediaUrl", "media_url")
     msg_content_hash = content_hash(content)
     msg_id = pick(message, "id", "msgId", "msg_id")
     mid = to_int(pick(message, "mid"))
     direction = pick(message, "direction") or infer_direction(message, conversation)
+    dedupe_msg_id = msg_id
+    dedupe_timestamp = timestamp
+    dedupe_content_hash = msg_content_hash
+    if event["source"] == "dom" and isinstance(msg_id, str) and msg_id.startswith("dom-"):
+        dedupe_msg_id = None
+        dedupe_timestamp = timestamp or pick(message, "displayTime", "display_time")
+        dedupe_content_hash = content_hash(compact_json({"content": content, "media_url": media_url}))
 
     dedupe_key = compute_dedupe_key(
         platform=PLATFORM,
         conversation_key=conversation["conversation_key"],
-        msg_id=msg_id,
+        msg_id=dedupe_msg_id,
         mid=mid,
-        timestamp=timestamp,
+        timestamp=dedupe_timestamp,
         direction=direction,
         body_type=body_type,
-        content_hash_value=msg_content_hash,
+        content_hash_value=dedupe_content_hash,
     )
 
     captured_at = pick(event, "captured_at", "capturedAt") or now_iso()
@@ -224,7 +232,12 @@ def normalize_message(
         "body_type": body_type,
         "content": content,
         "content_hash": msg_content_hash,
-        "media_url": pick(body, "url", "mediaUrl", "media_url"),
+        "media_url": media_url,
+        "media_local_path": pick(body, "localPath", "local_path", "mediaLocalPath", "media_local_path"),
+        "media_mime_type": pick(body, "mimeType", "mime_type", "mediaMimeType", "media_mime_type"),
+        "media_storage_provider": pick(body, "storageProvider", "storage_provider", "mediaStorageProvider"),
+        "media_download_status": pick(body, "downloadStatus", "download_status", "mediaDownloadStatus"),
+        "media_download_error": pick(body, "downloadError", "download_error", "mediaDownloadError"),
         "media_width": to_int(pick(body, "width")),
         "media_height": to_int(pick(body, "height")),
         "media_size": to_int(pick(body, "size")),

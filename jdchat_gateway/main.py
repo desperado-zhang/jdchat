@@ -1,23 +1,30 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import FileResponse
 
 from jdchat_gateway import __version__
 from jdchat_gateway.db import connect, init_db
+from jdchat_gateway.media import cache_message_media, media_public_url
 from jdchat_gateway.models import CaptureBatchIn, CaptureRejected, CaptureResponse, HealthResponse
 from jdchat_gateway.normalize import normalize_capture_event
 from jdchat_gateway.repositories import (
+    capture_stats,
     list_capture_events_recent,
     list_conversations,
     list_messages,
     record_capture_event,
+    reuse_existing_message_identity,
     upsert_conversation,
     upsert_message,
 )
 from jdchat_gateway.settings import Settings
+
+VIEWER_HTML = Path(__file__).with_name("static") / "viewer.html"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -52,6 +59,26 @@ def require_local_token(
 
 
 def register_routes(app: FastAPI) -> FastAPI:
+    @app.get("/viewer", include_in_schema=False)
+    def viewer() -> FileResponse:
+        if not VIEWER_HTML.exists():
+            raise HTTPException(status_code=404, detail="viewer page not found")
+        return FileResponse(VIEWER_HTML)
+
+    @app.get("/media/{media_path:path}", include_in_schema=False)
+    def media_file(media_path: str, settings: Annotated[Settings, Depends(get_settings)]) -> FileResponse:
+        if settings.media_storage_provider.lower().strip() != "local":
+            raise HTTPException(status_code=404, detail="local media storage is disabled")
+        base = settings.media_dir.resolve()
+        target = (base / media_path).resolve()
+        try:
+            target.relative_to(base)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="media file not found") from exc
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail="media file not found")
+        return FileResponse(target)
+
     @app.get("/health", response_model=HealthResponse)
     def health(settings: Annotated[Settings, Depends(get_settings)]) -> HealthResponse:
         conn = connect(settings.database_path)
@@ -82,6 +109,8 @@ def register_routes(app: FastAPI) -> FastAPI:
                             CaptureRejected(eventId=normalized["event_id"], reason="event has no message payload")
                         )
                         continue
+                    reuse_existing_message_identity(conn, normalized["message"])
+                    cache_message_media(normalized["message"], settings)
 
                     with conn:
                         upsert_conversation(conn, normalized["conversation"], normalized["message"])
@@ -108,30 +137,44 @@ def register_routes(app: FastAPI) -> FastAPI:
             rejected=rejected,
         )
 
-    @app.get("/conversations")
+    @app.get("/conversations", dependencies=[Depends(require_local_token)])
     def conversations(
         settings: Annotated[Settings, Depends(get_settings)],
         limit: int = 50,
+        q: str | None = None,
+        source: str | None = None,
     ) -> dict[str, object]:
         conn = connect(settings.database_path)
         try:
-            return {"items": list_conversations(conn, min(max(limit, 1), 200))}
+            return {"items": list_conversations(conn, min(max(limit, 1), 200), q=q, source=source)}
         finally:
             conn.close()
 
-    @app.get("/conversations/{conversation_key}/messages")
+    @app.get("/conversations/{conversation_key}/messages", dependencies=[Depends(require_local_token)])
     def conversation_messages(
         conversation_key: str,
         settings: Annotated[Settings, Depends(get_settings)],
         limit: int = 50,
+        order: str = "desc",
+        before: str | None = None,
     ) -> dict[str, object]:
+        normalized_order = "asc" if order == "asc" else "desc"
         conn = connect(settings.database_path)
         try:
-            return {"items": list_messages(conn, conversation_key, min(max(limit, 1), 500))}
+            items = list_messages(
+                conn,
+                conversation_key,
+                min(max(limit, 1), 500),
+                order=normalized_order,
+                before=before,
+            )
+            return {
+                "items": [with_media_public_url(item, settings) for item in items],
+            }
         finally:
             conn.close()
 
-    @app.get("/capture/events/recent")
+    @app.get("/capture/events/recent", dependencies=[Depends(require_local_token)])
     def recent_capture_events(
         settings: Annotated[Settings, Depends(get_settings)],
         limit: int = 20,
@@ -142,7 +185,23 @@ def register_routes(app: FastAPI) -> FastAPI:
         finally:
             conn.close()
 
+    @app.get("/capture/stats", dependencies=[Depends(require_local_token)])
+    def stats(settings: Annotated[Settings, Depends(get_settings)]) -> dict[str, object]:
+        conn = connect(settings.database_path)
+        try:
+            return capture_stats(conn)
+        finally:
+            conn.close()
+
     return app
+
+
+def with_media_public_url(item: dict[str, object], settings: Settings) -> dict[str, object]:
+    local_path = item.get("media_local_path")
+    if isinstance(local_path, str):
+        item = dict(item)
+        item["media_local_url"] = media_public_url(local_path, settings)
+    return item
 
 
 app = create_app()
