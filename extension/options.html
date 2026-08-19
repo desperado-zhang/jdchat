@@ -59,9 +59,67 @@
         margin: 6px 0 12px;
       }
 
+      input[type="number"] {
+        width: 80px;
+        box-sizing: border-box;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 6px 8px;
+      }
+
       input[type="checkbox"] {
         width: 16px;
         height: 16px;
+      }
+
+      button {
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 7px 10px;
+        background: #ffffff;
+        color: #1f2937;
+        cursor: pointer;
+        font-size: 13px;
+      }
+
+      button.primary {
+        border-color: #2563eb;
+        background: #2563eb;
+        color: #ffffff;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .section {
+        margin-top: 12px;
+        border-top: 1px solid #eef2f7;
+        padding-top: 10px;
+      }
+
+      .section-title {
+        margin: 0 0 8px;
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .collector-status {
+        margin-top: 10px;
+        border-radius: 6px;
+        background: #f1f5f9;
+        padding: 8px;
+        color: #334155;
+        font-size: 12px;
+        line-height: 1.45;
+        white-space: pre-line;
       }
 
       .hint {
@@ -114,6 +172,26 @@
       </div>
       <div class="row">
         <label><input id="autoScrollHistory" type="checkbox"> 历史自动上翻</label>
+      </div>
+      <div class="section">
+        <p class="section-title">京麦受控采集</p>
+        <div class="row">
+          <label for="receptionMaxPages">最多页数</label>
+          <input id="receptionMaxPages" type="number" min="1" max="10" step="1">
+        </div>
+        <div class="row">
+          <label for="receptionMaxConversations">最多会话</label>
+          <input id="receptionMaxConversations" type="number" min="1" max="200" step="1">
+        </div>
+        <div class="row">
+          <label for="receptionMaxRuntimeMinutes">最长分钟</label>
+          <input id="receptionMaxRuntimeMinutes" type="number" min="1" max="30" step="1">
+        </div>
+        <div class="actions">
+          <button id="startReceptionCollector" class="primary" type="button">开始采集</button>
+          <button id="stopReceptionCollector" type="button">停止</button>
+        </div>
+        <div id="collectorStatus" class="collector-status" aria-live="polite">状态：未连接当前页面</div>
       </div>
       <p class="hint">京麦聊天记录采集读取“查看”弹窗对应的明细接口，并通过独立接口与独立表入库；旧咚咚实时采集默认关闭。</p>
       <div id="status" class="status" aria-live="polite"></div>
