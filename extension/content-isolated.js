@@ -152,11 +152,15 @@
   function readPageContext() {
     const selectedTab = document.querySelector(".c_tabs-tab_check");
     const selectedTabLabel = elementLabel(selectedTab);
+    const activeSidebarTab = normalizeSidebarTab(selectedTabLabel);
+    const historyListVisible = activeSidebarTab === "history" && !!document.querySelector(".list-compatible.recent-user-w");
     return {
-      activeSidebarTab: normalizeSidebarTab(selectedTabLabel),
+      activeSidebarTab,
       activeSidebarTabLabel: selectedTabLabel || undefined,
-      historyListVisible: !!document.querySelector(".list-compatible.recent-user-w"),
-      historyItemCount: document.querySelectorAll(".list-compatible.recent-user-w .alluser-item").length,
+      historyListVisible,
+      historyItemCount: historyListVisible
+        ? document.querySelectorAll(".list-compatible.recent-user-w .alluser-item").length
+        : 0,
       chatRootVisible: !!findChatRoot(),
       messageNodeCount: document.querySelectorAll("#t-chat-scroll .message, .chat-scroll-wrap .message").length,
       capturedPageUrl: location.origin + location.pathname,
