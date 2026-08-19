@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "JDChat Passive Capture",
+  "version": "0.1.0",
+  "description": "Passive local capture bridge for JD Dongdong chat data.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://dongdong.jd.com/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://dongdong.jd.com/*"],
+      "js": ["content-isolated.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected-main.js"],
+      "matches": ["https://dongdong.jd.com/*"]
+    }
+  ]
+}

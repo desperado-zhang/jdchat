@@ -1,0 +1,157 @@
+(() => {
+  const MAIN_SOURCE = "jdchat-capture-main";
+  const MESSAGE_TYPE = "jdchat-capture-event";
+  const processedDomNodes = new WeakSet();
+  let observer = null;
+
+  injectMainScript();
+  window.addEventListener("message", onMainWorldMessage, false);
+  waitForChatRoot();
+
+  function injectMainScript() {
+    const script = document.createElement("script");
+    script.src = chrome.runtime.getURL("injected-main.js");
+    script.dataset.jdchatCapture = "main";
+    script.onload = () => script.remove();
+    (document.documentElement || document.head).appendChild(script);
+  }
+
+  function onMainWorldMessage(event) {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.source !== MAIN_SOURCE || data.type !== MESSAGE_TYPE || !data.event) return;
+    sendEvent(data.event);
+  }
+
+  function waitForChatRoot() {
+    const root = findChatRoot();
+    if (root) {
+      attachDomObserver(root);
+      scanExistingMessages(root);
+      return;
+    }
+    setTimeout(waitForChatRoot, 1000);
+  }
+
+  function findChatRoot() {
+    return document.querySelector("#t-chat-scroll, .chat-scroll-wrap");
+  }
+
+  function attachDomObserver(root) {
+    if (observer) observer.disconnect();
+    observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType !== Node.ELEMENT_NODE) continue;
+          scanMessageNode(node);
+        }
+      }
+    });
+    observer.observe(root, { childList: true, subtree: true });
+  }
+
+  function scanExistingMessages(root) {
+    root.querySelectorAll(".message").forEach((node) => scanMessageNode(node));
+  }
+
+  function scanMessageNode(node) {
+    const messageNode = node.matches && node.matches(".message") ? node : node.querySelector && node.querySelector(".message");
+    if (!messageNode || processedDomNodes.has(messageNode)) return;
+    processedDomNodes.add(messageNode);
+
+    const parsed = parseDomMessage(messageNode);
+    if (!parsed) return;
+    sendEvent(parsed);
+  }
+
+  function parseDomMessage(node) {
+    const direction = inferDomDirection(node);
+    const contentNode = node.querySelector(".message__content");
+    const textWrapper = node.querySelector(".message__text");
+    const image = node.querySelector(".message__image-wrap img, .message__image img");
+    const card = node.querySelector(".CardWrapper.ProductCard, .CardWrapper");
+    const timeNode = node.querySelector(".message__time_str");
+    const nicknameNode = node.querySelector(".message__nickname");
+    const bodyType = image ? "image" : card ? "template2" : direction === "system" ? "system" : "text";
+    const content = text(contentNode || textWrapper || card || node);
+    const imageUrl = image ? image.currentSrc || image.src || "" : "";
+    const displayTime = text(timeNode);
+    const nickname = text(nicknameNode);
+    const customerName = text(document.querySelector(".chat-head-name")) || text(document.querySelector(".chat-head-title"));
+    const domStableId = hashString(
+      [
+        customerName,
+        direction,
+        bodyType,
+        content,
+        imageUrl,
+        displayTime,
+        nodeIndex(node),
+      ].join("|"),
+    );
+
+    if (!content && !imageUrl && !card) return null;
+
+    return {
+      eventId: `dom-${domStableId}`,
+      source: "dom",
+      eventType: "message",
+      conversation: {
+        customerName: customerName || undefined,
+        customerApp: "dom",
+        customerPin: customerName ? `dom:${hashString(customerName)}` : "dom:unknown",
+        sessionType: "dom",
+      },
+      message: {
+        id: `dom-${domStableId}`,
+        direction,
+        type: "chat_message",
+        body: {
+          type: bodyType,
+          content: content || undefined,
+          url: imageUrl || undefined,
+        },
+        displayTime: displayTime || undefined,
+        nickname: nickname || undefined,
+      },
+      capturedAt: new Date().toISOString(),
+    };
+  }
+
+  function inferDomDirection(node) {
+    if (node.querySelector(".message_right")) return "seller_or_waiter";
+    if (node.querySelector(".message_left")) return "customer_or_external";
+    if (node.querySelector(".message_center, .message__system")) return "system";
+    return "unknown";
+  }
+
+  function text(node) {
+    return (node && (node.innerText || node.textContent) ? node.innerText || node.textContent : "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function nodeIndex(node) {
+    const parent = node.parentElement;
+    if (!parent) return 0;
+    return Array.prototype.indexOf.call(parent.children, node);
+  }
+
+  function hashString(input) {
+    let hash = 2166136261;
+    const value = String(input || "");
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+    }
+    return (hash >>> 0).toString(16);
+  }
+
+  function sendEvent(event) {
+    chrome.runtime.sendMessage({ type: MESSAGE_TYPE, event }, () => {
+      if (chrome.runtime.lastError) {
+        // Service worker may be asleep or unavailable during extension reloads. Drop rather than touch page state.
+      }
+    });
+  }
+})();
