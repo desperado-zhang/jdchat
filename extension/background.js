@@ -5,6 +5,7 @@ const DEFAULT_CONFIG = {
   maxBatchSize: 50,
   maxQueueSize: 2000,
 };
+const RETRY_ALARM_NAME = "jdchat-flush-retry";
 
 let flushTimer = null;
 let flushing = false;
@@ -14,6 +15,18 @@ chrome.runtime.onInstalled.addListener(async () => {
   if (!config) {
     await chrome.storage.local.set({ config: DEFAULT_CONFIG, queue: [] });
   }
+  await ensureRetryAlarm();
+  scheduleFlush(1000);
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  ensureRetryAlarm().catch(() => undefined);
+  scheduleFlush(1000);
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== RETRY_ALARM_NAME) return;
+  flushQueue().catch(() => undefined);
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -76,14 +89,20 @@ async function flushQueue() {
     const headers = { "Content-Type": "application/json" };
     if (config.apiToken) headers.Authorization = `Bearer ${config.apiToken}`;
 
-    const response = await fetch(`${config.gatewayUrl.replace(/\/$/, "")}/capture/events`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        pluginInstanceId: await pluginInstanceId(),
-        events: batch,
-      }),
-    });
+    let response;
+    try {
+      response = await fetch(`${config.gatewayUrl.replace(/\/$/, "")}/capture/events`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          pluginInstanceId: await pluginInstanceId(),
+          events: batch,
+        }),
+      });
+    } catch (_error) {
+      scheduleFlush(5000);
+      return;
+    }
 
     if (!response.ok) {
       scheduleFlush(5000);
@@ -95,6 +114,10 @@ async function flushQueue() {
   } finally {
     flushing = false;
   }
+}
+
+async function ensureRetryAlarm() {
+  await chrome.alarms.create(RETRY_ALARM_NAME, { periodInMinutes: 1 });
 }
 
 async function pluginInstanceId() {

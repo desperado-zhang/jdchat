@@ -4,10 +4,17 @@
   const SNAPSHOT_INTERVAL_MS = 5000;
   const MAX_MESSAGES_PER_BATCH = 100;
   const MAX_NETWORK_MESSAGES = 50;
+  const ENABLE_NETWORK_HOOKS = window.__JDCHAT_CAPTURE_ENABLE_NETWORK_HOOKS__ === true;
 
   let snapshotTimer = null;
 
-  installPassiveNetworkHooks();
+  window.__JDCHAT_CAPTURE_MAIN_READY__ = {
+    version: "0.1.1",
+    networkHooksEnabled: ENABLE_NETWORK_HOOKS,
+    startedAt: new Date().toISOString(),
+  };
+
+  if (ENABLE_NETWORK_HOOKS) installPassiveNetworkHooks();
   scheduleSessionSnapshots();
 
   function scheduleSessionSnapshots() {

@@ -10,7 +10,7 @@
 注入 MAIN world 脚本
 读取 window.session.customer
 读取 window.session.messages()
-被动观察页面已有 WebSocket / fetch / XHR 响应
+默认只读取页面已有前端状态和已渲染 DOM 消息
 监听当前会话 #t-chat-scroll DOM 增量
 把事件发到 background 队列
 批量 POST 到 http://127.0.0.1:8765/capture/events
@@ -42,7 +42,7 @@ extension/
 职责：
 
 ```text
-injected-main.js      页面 MAIN world，只读观察 window.session 和页面网络事件
+injected-main.js      页面 MAIN world，只读观察 window.session
 content-isolated.js   插件 isolated world，监听 DOM 和转发 page postMessage
 background.js         插件 service worker，本地队列和上报本机 Python 服务
 manifest.json         Chrome MV3 配置
@@ -97,7 +97,7 @@ window.session.setStatus
 主动创建额外 WebSocket
 ```
 
-`injected-main.js` 的网络 hook 只读取页面自身已经收到的响应 clone，不修改请求和响应，也不阻断页面逻辑。
+`injected-main.js` 默认不包装 WebSocket / fetch / XHR，避免影响咚咚工作台初始化。网络 hook 只保留为显式实验开关，必须在页面侧设置 `window.__JDCHAT_CAPTURE_ENABLE_NETWORK_HOOKS__ = true` 后才会启用。
 
 `background.js` 只向本机服务发送：
 
@@ -109,7 +109,7 @@ http://127.0.0.1:8765/capture/events
 
 ```text
 DOM 来源消息会生成 dom-* id，可能无法与结构化 session 消息完全合并
-WebSocket/XHR/fetch 消息解析是通用递归提取，需要用真实页面继续校验
+WebSocket/XHR/fetch 网络 hook 默认关闭，需要单独实验和风控评估后再考虑启用
 background 队列使用 chrome.storage.local，适合 MVP，不适合大规模长期缓存
 插件还没有配置 UI，网关地址固定为 127.0.0.1:8765
 ```
