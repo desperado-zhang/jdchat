@@ -1,10 +1,24 @@
 # jdchat
 
-京东咚咚聊天记录被动采集与本地采集网关实验项目。
+京麦接待工具“聊天记录”采集与本地查询网关。
 
-本项目用于在客服本人已登录京东咚咚工作站、页面自然运行的前提下，被动采集页面已经收到或已经渲染出的聊天消息，写入本机 SQLite，并提供本地只读浏览页面和查询接口。
+当前 `main` 分支以新需求为主线：在客服本人已登录京麦后台、页面已打开的前提下，插件进入“聊天记录”列表，按当天默认查询结果逐页点击“查看”，采集弹窗中的客服和客户聊天明细，去重后写入本机 SQLite，并提供本地只读浏览页面和查询接口。
 
-默认数据范围是当前客服可见的咚咚会话数据。插件不采集浏览器 cookie/token，不主动请求京东接口，不自动切换客户，不自动发送消息，不自动标记已读。
+默认数据范围是当前客服可见的当天聊天记录。插件不采集浏览器 cookie/token，不主动请求京东接口，不自动发送消息，不自动标记已读。旧咚咚实时采集逻辑仍保留为 legacy 兼容能力，但默认关闭，不作为当前业务流程。
+
+目标页面：
+
+```text
+https://shop.jd.com/jdm/kefu/kf-manage-lite/#/UtilsSetting/ReceptionTools
+```
+
+进入页面后点击“聊天记录”卡片。该列表默认就是当天数据，不需要额外筛选日期。
+
+旧主线代码已归档在远端分支：
+
+```text
+archive/main-before-reception-chatlog-20260820
+```
 
 ## 项目架构
 
@@ -12,18 +26,19 @@
 jdchat/
 ├── extension/
 │   ├── manifest.json          # Chrome MV3 插件配置
-│   ├── injected-main.js       # MAIN world，只读观察 window.session 和显式 Network hook
-│   ├── content-isolated.js    # isolated world，监听 DOM、页面上下文和历史滚动容器
-│   ├── background.js          # 插件本地队列、批量上传、失败重试
+│   ├── injected-main.js       # MAIN world，只读观察页面自然返回的数据
+│   ├── content-isolated.js    # 京麦聊天记录列表、分页、“查看”弹窗采集状态机
+│   ├── background.js          # 本地队列、批量上传、失败重试、任务进度上报
 │   ├── options.html           # 插件弹窗页面
-│   └── options.js             # 插件开关和网关地址配置
+│   └── options.js             # 插件开关、京麦受控采集按钮和参数配置
 ├── jdchat_gateway/
 │   ├── main.py                # FastAPI 入口、路由、鉴权和静态页面
 │   ├── settings.py            # JDCHAT_* 环境变量配置
 │   ├── db.py                  # SQLite 初始化、迁移和连接
+│   ├── reception.py           # 京麦聊天记录规范化、去重、查询和任务进度
 │   ├── normalize.py           # conversation/message 规范化和敏感字段脱敏
 │   ├── dedupe.py              # dedupe_key、内容哈希和标识哈希
-│   ├── repositories.py        # conversations/messages/capture_events 查询与写入
+│   ├── repositories.py        # legacy conversations/messages/capture_events 兼容写入
 │   ├── media.py               # 图片消息本地缓存
 │   └── static/viewer.html     # 本地只读会话浏览页面
 ├── docs/                      # 架构、插件 MVP 和联调记录
@@ -37,35 +52,38 @@ jdchat/
 
 ```mermaid
 flowchart LR
-  A["京东咚咚工作站页面"] --> B["Chrome 插件"]
-  B --> C["DOM / session / 显式 Network 被动事件"]
+  A["京麦接待工具 / 聊天记录"] --> B["Chrome 插件"]
+  B --> C["当前查询列表 / 分页 / 查看弹窗"]
   C --> D["background 本地队列"]
   D --> E["FastAPI: 127.0.0.1:8765"]
-  E --> F["Normalize + Dedupe + Media Cache"]
+  E --> F["Reception Normalize + Dedupe + Media Cache"]
   F --> G["SQLite: data/jdchat-reception.sqlite3"]
   G --> H["本地只读页面 /viewer"]
-  G --> I["查询 API /conversations"]
+  G --> I["查询 API /reception/chatlog/*"]
 ```
 
 核心存储表：
 
-- `conversations`：会话索引，按 `conversation_key` 聚合客户、商家和最近消息。
-- `messages`：规范化消息，使用 `dedupe_key` 幂等写入，保留来源、方向、内容、媒体字段。
-- `capture_events`：原始采集事件和页面上下文元数据，便于排查历史咨询采集。
+- `reception_chatlog_sessions`：京麦聊天记录会话索引，按 `conversation_key` 聚合客户、客服、商品、咨询时间和最新消息。
+- `reception_chatlog_messages`：聊天明细消息，使用 `dedupe_key UNIQUE` 幂等入库。
+- `reception_chatlog_events`：采集原始事件元数据，用于排查来源和重复。
+- `reception_chatlog_capture_jobs`：每日全量补抓和增量巡检任务进度。
+- `conversations`、`messages`、`capture_events`：legacy 旧咚咚实时采集兼容表，当前新需求不依赖。
 - `audit_logs`：本地操作审计预留表。
 
 ## 页面地址
 
 | 类型 | 地址 |
 | --- | --- |
-| 京东咚咚来源页面 | `https://dongdong.jd.com/` |
+| 京麦接待工具页面 | `https://shop.jd.com/jdm/kefu/kf-manage-lite/#/UtilsSetting/ReceptionTools` |
 | Chrome 插件管理 | `chrome://extensions` |
 | 本地只读浏览页面 | `http://127.0.0.1:8765/viewer` |
 | 健康检查 | `http://127.0.0.1:8765/health` |
-| 会话列表 API | `http://127.0.0.1:8765/conversations` |
-| 会话消息 API | `http://127.0.0.1:8765/conversations/{conversation_key}/messages` |
-| 最近采集事件 API | `http://127.0.0.1:8765/capture/events/recent` |
-| 采集统计 API | `http://127.0.0.1:8765/capture/stats` |
+| 京麦会话列表 API | `http://127.0.0.1:8765/reception/chatlog/sessions` |
+| 京麦客户聚合 API | `http://127.0.0.1:8765/reception/chatlog/customers` |
+| 京麦最近事件 API | `http://127.0.0.1:8765/reception/chatlog/events/recent` |
+| 京麦采集统计 API | `http://127.0.0.1:8765/reception/chatlog/stats` |
+| 京麦任务进度 API | `http://127.0.0.1:8765/reception/chatlog/capture-jobs` |
 | 本地媒体文件 | `http://127.0.0.1:8765/media/{media_path}` |
 
 本地页面只读取本机网关 API，支持会话搜索、来源筛选、消息查看、图片预览和本机 API token 填写。设置 `JDCHAT_API_TOKEN` 后，除 `/health`、`/viewer` 和本地媒体文件外，查询与采集接口都需要 `Authorization: Bearer <token>`。
@@ -106,7 +124,7 @@ python -m pip list
 - FastAPI、Uvicorn、Pydantic、pytest、httpx、ruff
 - 可写的本地数据目录 `data/`
 - Chrome 或 Chromium 浏览器
-- 已登录的 `https://dongdong.jd.com/` 页面
+- 已登录的京麦接待工具页面
 
 ## 本机采集网关
 
@@ -129,7 +147,8 @@ http://127.0.0.1:8765/viewer
 
 ```bash
 curl http://127.0.0.1:8765/health
-curl http://127.0.0.1:8765/capture/stats
+curl http://127.0.0.1:8765/reception/chatlog/stats
+curl "http://127.0.0.1:8765/reception/chatlog/capture-jobs?limit=5"
 ```
 
 如需后台运行：
@@ -165,7 +184,7 @@ export JDCHAT_API_TOKEN=local-secret
 Authorization: Bearer local-secret
 ```
 
-如果启用 token，`/viewer` 页面可以填写本机 API token。插件弹窗当前只暴露网关地址和采集开关；MVP 本机联调阶段建议先不设置 `JDCHAT_API_TOKEN`，否则插件批量上报需要额外保证扩展本地配置中的 `apiToken` 与后端一致。
+如果启用 token，`/viewer` 页面可以填写本机 API token。插件批量上报也需要保证扩展本地配置中的 `apiToken` 与后端一致。
 
 图片消息默认尝试下载到本地媒体目录。下载失败不会拒绝消息入库：
 
@@ -181,7 +200,7 @@ export JDCHAT_MEDIA_DOWNLOAD_MAX_BYTES=10485760
 
 ## 浏览器插件使用方式
 
-插件位于 `extension/`，是本项目和普通本地后端项目最大的区别。使用顺序是先启动本机采集网关，再加载 Chrome 插件，最后在已登录的咚咚页面中手动打开会话。
+插件位于 `extension/`。使用顺序是先启动本机采集网关，再加载 Chrome 插件，最后在已登录的京麦页面进入“聊天记录”并点击插件弹窗里的“开始采集”。
 
 加载插件：
 
@@ -190,11 +209,14 @@ export JDCHAT_MEDIA_DOWNLOAD_MAX_BYTES=10485760
 2. 打开 Developer mode
 3. 点击 Load unpacked
 4. 选择 /Users/leo/project/jdchat/extension
-5. 打开 https://dongdong.jd.com/
-6. 人工登录并手动打开一个客户会话
+5. 打开 https://shop.jd.com/jdm/kefu/kf-manage-lite/#/UtilsSetting/ReceptionTools
+6. 人工登录
+7. 点击“聊天记录”卡片
+8. 打开插件弹窗，确认“京麦聊天记录采集”开启
+9. 点击“开始采集”
 ```
 
-修改过 `extension/` 代码后，需要回到 `chrome://extensions`，点击 `JDChat Passive Capture` 卡片上的 reload，再刷新 `https://dongdong.jd.com/` 页面。只重启本机网关不会让浏览器重新加载插件代码。
+修改过 `extension/` 代码后，需要回到 `chrome://extensions`，点击 `JDChat Passive Capture` 卡片上的 reload，再刷新京麦页面。只重启本机网关不会让浏览器重新加载插件代码。
 
 插件弹窗入口是浏览器工具栏里的 `JDChat Capture`。弹窗配置会保存到 `chrome.storage.local`：
 
@@ -202,9 +224,16 @@ export JDCHAT_MEDIA_DOWNLOAD_MAX_BYTES=10485760
 | --- | --- | --- |
 | 本机网关 | `http://127.0.0.1:8765` | 插件批量 POST 的本机 FastAPI 地址 |
 | 总开关 | 开 | 关闭后只保留插件配置，不再入队上报 |
-| DOM 监听 | 开 | 读取当前聊天窗口已经渲染出的 `.message` 节点 |
-| session 快照 | 开 | 读取页面已有的 `window.session.customer` 和 `window.session.messages()` |
-| 历史自动上翻 | 开 | 只滚动当前已打开会话的聊天滚动容器，用于补齐已渲染历史 |
+| 京麦聊天记录采集 | 开 | 当前主流程，读取“查看”弹窗明细并写入独立表 |
+| 旧咚咚实时采集 | 关 | legacy 兼容开关，当前新需求不启用 |
+| 每日全量补抓 | 开 | 点击“开始采集”后按当天列表全量逐页补抓 |
+| 全量页数上限 | `500` | 防止异常分页导致无限采集 |
+| 会话上限 | `10000` | 单次全量采集最大记录数 |
+| 最长分钟 | `120` | 单次任务最大运行时间 |
+| 自动增量巡检 | 开 | 全量完成后定时刷新当天列表并补抓新消息 |
+| 刷新间隔分钟 | `3` | 增量巡检周期 |
+| 增量巡检页数 | `5` | 每轮增量默认检查前 N 页 |
+| 追平确认轮数 | `2` | 增量追平判断参数 |
 | Network 被动监听 | 关 | 显式开启后观察页面自然产生的 fetch/XHR/WebSocket 数据 |
 | fetch | 开 | 仅在 Network 被动监听开启后生效 |
 | XHR | 开 | 仅在 Network 被动监听开启后生效 |
@@ -214,74 +243,119 @@ export JDCHAT_MEDIA_DOWNLOAD_MAX_BYTES=10485760
 
 ```text
 总开关
-DOM 监听
-session 快照
-历史自动上翻
+京麦聊天记录采集
+每日全量补抓
+自动增量巡检
 ```
 
 保持以下开关关闭：
 
 ```text
+旧咚咚实时采集
 Network 被动监听
 WebSocket 监听
 ```
 
-当前会话采集方式：
+点击“开始采集”后默认执行 `backfill_today`：
 
 ```text
-1. 确认本机网关 /health 正常
-2. 确认插件总开关、DOM 监听、session 快照开启
-3. 在咚咚页面手动打开一个客户会话
-4. 等待右侧消息渲染
-5. 打开 http://127.0.0.1:8765/viewer 或查询 /conversations 验证入库
+1. 刷新当前聊天记录查询
+2. 回到第 1 页
+3. 读取当天总条数和总页数
+4. 从第 1 页开始逐页点击“查看”
+5. 采集弹窗聊天明细并提交到本机网关
+6. 写入 reception_chatlog_* 表，重复消息不新增
 ```
 
-历史咨询采集方式：
+全量补抓完成后，如果“自动增量巡检”开启，会按配置周期执行 `incremental`：
 
 ```text
-1. 由客服手动点击咚咚左侧“历史咨询”
-2. 手动打开一个历史会话
-3. 插件只读取右侧已经渲染出的消息
-4. 历史自动上翻只滚动当前聊天滚动容器，不点击历史会话列表
-5. 查询 /capture/events/recent?limit=10 验证 active_sidebar_tab=history
+1. 刷新当前查询结果
+2. 回到第 1 页
+3. 默认巡检前 5 页
+4. 对每条记录重新打开“查看”
+5. 数据库按 dedupe_key 去重，只插入新消息
+6. 会话 last_message_at 只会向更新消息推进
 ```
 
-如果要启用 Network + DOM 双通道，在插件弹窗中打开：
+停止采集时点击插件弹窗里的“停止”。停止动作会关闭自动增量巡检，并向当前页面发送停止命令。
+
+旧咚咚实时采集如需临时排查，可打开 legacy 相关开关：
 
 ```text
+旧咚咚实时采集
+DOM 监听
+session 快照
 Network 被动监听
 fetch
 XHR
 ```
 
-然后刷新 `https://dongdong.jd.com/` 生效。`WebSocket` 默认关闭；需要验证实时链路时再手动打开并刷新页面。Network 监听只观察页面自然收到的数据，不主动请求京东接口，不保存完整响应体。
+该链路不属于当前新需求验收范围。Network 监听只观察页面自然收到的数据，不主动请求京东接口，不保存完整响应体。
 
 常用验证命令：
 
 ```bash
 curl http://127.0.0.1:8765/health
-curl "http://127.0.0.1:8765/conversations?limit=20"
-curl "http://127.0.0.1:8765/capture/events/recent?limit=10"
-curl http://127.0.0.1:8765/capture/stats
+curl http://127.0.0.1:8765/reception/chatlog/stats
+curl "http://127.0.0.1:8765/reception/chatlog/sessions?limit=20"
+curl "http://127.0.0.1:8765/reception/chatlog/events/recent?limit=10"
+curl "http://127.0.0.1:8765/reception/chatlog/capture-jobs?limit=5"
 ```
 
 如果 `/health` 正常但没有消息入库，优先检查：
 
 ```text
 插件是否已 reload
-咚咚页面是否已刷新
+京麦页面是否已刷新
+是否已经进入“聊天记录”列表
+列表页是否能看到“查看”按钮
 插件弹窗总开关是否开启
+插件弹窗“京麦聊天记录采集”是否开启
 本机网关地址是否仍为 http://127.0.0.1:8765
 是否误设置了 JDCHAT_API_TOKEN 导致插件上报 401
-是否已经手动打开具体客户会话并等待消息渲染
 ```
 
 ## 主要接口
 
+当前业务接口：
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/health` | 健康检查 |
+| `GET` | `/viewer` | 本地只读浏览页面 |
+| `GET` | `/media/{media_path}` | 本地媒体文件 |
+| `POST` | `/reception/chatlog/events` | 接收京麦聊天记录批量事件 |
+| `GET` | `/reception/chatlog/stats` | 京麦聊天记录统计和最新任务状态 |
+| `GET` | `/reception/chatlog/events/recent` | 最近京麦采集事件 |
+| `POST` | `/reception/chatlog/capture-jobs` | 插件上报采集任务进度 |
+| `GET` | `/reception/chatlog/capture-jobs` | 查询采集任务进度 |
+| `GET` | `/reception/chatlog/sessions` | 会话列表 |
+| `GET` | `/reception/chatlog/sessions/{conversation_key}/messages` | 指定会话消息 |
+| `GET` | `/reception/chatlog/customers` | 客户聚合列表 |
+| `GET` | `/reception/chatlog/customers/{customer_hash}/messages` | 指定客户消息 |
+
+查看数据：
+
+```bash
+curl http://127.0.0.1:8765/reception/chatlog/stats
+curl "http://127.0.0.1:8765/reception/chatlog/sessions?limit=20"
+curl "http://127.0.0.1:8765/reception/chatlog/customers?limit=20"
+curl "http://127.0.0.1:8765/reception/chatlog/events/recent?limit=10"
+curl "http://127.0.0.1:8765/reception/chatlog/capture-jobs?limit=5"
+```
+
+`POST /reception/chatlog/events` 接收插件批量事件，后端会规范化 session/message，计算 `dedupe_key`，并写入 `reception_chatlog_*` 表。去重优先级：
+
 ```text
-GET  /health
-GET  /viewer
-GET  /media/{media_path}
+1. reception-chatlog:{cid_hash}:{mid}
+2. reception-chatlog:{cid_hash}:{uuid}
+3. reception-chatlog:{cid_hash}:{message_at}:{direction}:{body_type}:{content_hash}
+```
+
+legacy 兼容接口：
+
+```text
 POST /capture/events
 GET  /capture/events/recent
 GET  /capture/stats
@@ -289,46 +363,7 @@ GET  /conversations
 GET  /conversations/{conversation_key}/messages
 ```
 
-`POST /capture/events` 接收插件批量事件，后端会规范化 conversation/message，计算 `dedupe_key`，并写入 SQLite。去重优先级：
-
-```text
-1. msg.id
-2. conversation_key + mid
-3. conversation_key + timestamp + direction + body_type + content_hash
-```
-
-查看最近会话：
-
-```bash
-curl "http://127.0.0.1:8765/conversations?limit=20"
-```
-
-按来源筛选：
-
-```bash
-curl "http://127.0.0.1:8765/conversations?source=dom"
-curl "http://127.0.0.1:8765/conversations?source=session"
-```
-
-查看某个会话的消息：
-
-```bash
-curl "http://127.0.0.1:8765/conversations/{conversation_key}/messages?order=asc&limit=100"
-```
-
-`GET /capture/events/recent` 只返回最近采集事件的元数据，便于验证历史 tab 采集，不返回消息正文：
-
-```bash
-curl "http://127.0.0.1:8765/capture/events/recent?limit=10"
-```
-
-历史对话验证时重点看：
-
-```text
-active_sidebar_tab=history
-history_list_visible=true
-message_node_count > 0
-```
+这些接口只服务旧咚咚实时采集链路。当前新需求不要依赖这些接口做验收。
 
 ## 采集联调流程
 
@@ -337,30 +372,32 @@ message_node_count > 0
 ```text
 1. 启动本机采集网关
 2. 加载 /Users/leo/project/jdchat/extension
-3. 打开并登录 https://dongdong.jd.com/
-4. 手动打开一个当前会话
-5. 保持 DOM/session 采集开启
-6. 访问 /viewer 或 /conversations 验证消息入库
+3. 打开并登录京麦接待工具页面
+4. 点击“聊天记录”卡片
+5. 打开插件弹窗并点击“开始采集”
+6. 观察弹窗状态中的总条数、页码、已打开记录数、失败数
+7. 查询 /reception/chatlog/stats 验证消息入库
+8. 查询 /reception/chatlog/capture-jobs?limit=5 验证任务进度
 ```
 
-Network + DOM 双通道验证：
+增量验证：
 
 ```text
-1. 点击浏览器插件 JDChat Capture 弹窗
-2. 打开 Network 被动监听、fetch、XHR
-3. 刷新 https://dongdong.jd.com/
-4. 手动打开会话并等待页面自然收发消息
-5. 访问 /capture/events/recent 和 /capture/stats 验证来源
+1. 完成当天全量补抓
+2. 保持“自动增量巡检”开启
+3. 等待下一个刷新周期
+4. 如果列表页出现新对话或旧对话有新消息，巡检会重新打开前 N 页“查看”
+5. 查询 /reception/chatlog/stats，比对 messages 是否增加
+6. 重复采集同一条消息不应增加 messages 数量
 ```
 
-历史咨询验证：
+数据库隔离验证：
 
 ```text
-1. 手动点击咚咚左侧“历史咨询”
-2. 手动打开一个历史会话
-3. 等待右侧消息渲染和当前聊天滚动容器补齐
-4. 查询 /capture/events/recent?limit=10
-5. 确认 active_sidebar_tab=history 且 message_node_count > 0
+1. 默认库路径应为 data/jdchat-reception.sqlite3
+2. 当前验收数据看 reception_chatlog_sessions、reception_chatlog_messages、reception_chatlog_events
+3. legacy conversations、messages、capture_events 不作为当前业务依据
+4. data/jdchat.sqlite3 可作为旧库本地保留或归档
 ```
 
 ## 测试
@@ -371,14 +408,19 @@ eval "$(conda shell.zsh hook)"
 conda activate jdchat
 ruff check .
 pytest -q
+node --check extension/background.js
+node --check extension/content-isolated.js
+node --check extension/options.js
 ```
 
 测试覆盖：
 
-- `dedupe_key` 优先级和 fallback 去重。
-- session、DOM、XHR 等来源的规范化。
-- 敏感字段脱敏。
-- 事件批量写入、重复合并和来源合并。
+- 京麦聊天记录规范化。
+- `dedupe_key` 去重和重复提交幂等。
+- 会话 `last_message_at` 不被旧消息回退。
+- `/reception/chatlog/*` 写入、查询和统计接口。
+- 采集任务进度写入和查询。
+- legacy `/capture/*` 接口兼容测试。
 - `/viewer`、查询接口和 token 鉴权。
 - 图片消息本地缓存与 `media_local_url` 返回。
 
@@ -392,10 +434,11 @@ pytest -q
 主动创建额外 WebSocket
 自动点击发送按钮
 写入输入框
-调用 window.session.send / read / setStatus / transfer
+调用页面发送、已读、转接或状态变更方法
 自动标记已读
 自动切换客户
-自动遍历历史会话列表
+修改查询日期范围
+删除本地数据库
 ```
 
-Network 监听只解析页面自然收到的响应/帧，不保存完整响应体，不读取或上报请求头、cookie、token。后续客服 Agent 只能读取本地消息库生成建议回复，不能直接操作咚咚页面发送消息。
+当前采集只读取“聊天记录”列表和“查看”弹窗中页面自然展示或自然返回的数据。Network 监听只解析页面自然收到的响应/帧，不保存完整响应体，不读取或上报请求头、cookie、token。后续客服 Agent 只能读取本地消息库生成建议回复，不能直接操作京麦页面发送消息。
