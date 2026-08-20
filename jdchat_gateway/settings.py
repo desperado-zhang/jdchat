@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_version: str = "0.1.1"
-    database_path: Path = Path("data/jdchat.sqlite3")
+    database_path: Path = Path("data/jdchat-reception.sqlite3")
     api_token: str | None = None
     media_storage_provider: str = "local"
     media_dir: Path = Path("data/media")

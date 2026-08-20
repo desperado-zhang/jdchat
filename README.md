@@ -42,7 +42,7 @@ flowchart LR
   C --> D["background 本地队列"]
   D --> E["FastAPI: 127.0.0.1:8765"]
   E --> F["Normalize + Dedupe + Media Cache"]
-  F --> G["SQLite: data/jdchat.sqlite3"]
+  F --> G["SQLite: data/jdchat-reception.sqlite3"]
   G --> H["本地只读页面 /viewer"]
   G --> I["查询 API /conversations"]
 ```
@@ -144,13 +144,13 @@ nohup uvicorn jdchat_gateway.main:app --host 127.0.0.1 --port 8765 > logs/gatewa
 默认 SQLite 路径：
 
 ```text
-data/jdchat.sqlite3
+data/jdchat-reception.sqlite3
 ```
 
 可通过环境变量覆盖：
 
 ```bash
-export JDCHAT_DATABASE_PATH=/absolute/path/to/jdchat.sqlite3
+export JDCHAT_DATABASE_PATH=/absolute/path/to/jdchat-reception.sqlite3
 ```
 
 可选本机接口 token：
