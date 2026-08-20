@@ -187,6 +187,13 @@
           <label for="receptionMaxRuntimeMinutes">最长分钟</label>
           <input id="receptionMaxRuntimeMinutes" type="number" min="1" max="30" step="1">
         </div>
+        <div class="row">
+          <label><input id="receptionAutoRefresh" type="checkbox"> 自动重复当前查询</label>
+        </div>
+        <div class="row">
+          <label for="receptionRefreshIntervalMinutes">刷新间隔分钟</label>
+          <input id="receptionRefreshIntervalMinutes" type="number" min="1" max="240" step="1">
+        </div>
         <div class="actions">
           <button id="startReceptionCollector" class="primary" type="button">开始采集</button>
           <button id="stopReceptionCollector" type="button">停止</button>

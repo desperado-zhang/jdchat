@@ -600,9 +600,24 @@ def upsert_reception_chatlog_session(
           intent_primary = COALESCE(excluded.intent_primary, reception_chatlog_sessions.intent_primary),
           intent_secondary = COALESCE(excluded.intent_secondary, reception_chatlog_sessions.intent_secondary),
           scene = COALESCE(excluded.scene, reception_chatlog_sessions.scene),
-          last_msg_id = COALESCE(excluded.last_msg_id, reception_chatlog_sessions.last_msg_id),
-          last_mid = COALESCE(excluded.last_mid, reception_chatlog_sessions.last_mid),
-          last_message_at = COALESCE(excluded.last_message_at, reception_chatlog_sessions.last_message_at),
+          last_msg_id = CASE
+            WHEN excluded.last_message_at IS NULL THEN reception_chatlog_sessions.last_msg_id
+            WHEN reception_chatlog_sessions.last_message_at IS NULL THEN excluded.last_msg_id
+            WHEN excluded.last_message_at >= reception_chatlog_sessions.last_message_at THEN excluded.last_msg_id
+            ELSE reception_chatlog_sessions.last_msg_id
+          END,
+          last_mid = CASE
+            WHEN excluded.last_message_at IS NULL THEN reception_chatlog_sessions.last_mid
+            WHEN reception_chatlog_sessions.last_message_at IS NULL THEN excluded.last_mid
+            WHEN excluded.last_message_at >= reception_chatlog_sessions.last_message_at THEN excluded.last_mid
+            ELSE reception_chatlog_sessions.last_mid
+          END,
+          last_message_at = CASE
+            WHEN excluded.last_message_at IS NULL THEN reception_chatlog_sessions.last_message_at
+            WHEN reception_chatlog_sessions.last_message_at IS NULL THEN excluded.last_message_at
+            WHEN excluded.last_message_at >= reception_chatlog_sessions.last_message_at THEN excluded.last_message_at
+            ELSE reception_chatlog_sessions.last_message_at
+          END,
           raw_session = COALESCE(excluded.raw_session, reception_chatlog_sessions.raw_session),
           captured_at = COALESCE(excluded.captured_at, reception_chatlog_sessions.captured_at),
           updated_at = CURRENT_TIMESTAMP

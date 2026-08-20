@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "JDChat Passive Capture",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Passive local capture bridge for JD Jingmai chat log data.",
   "permissions": ["storage", "alarms", "activeTab"],
   "host_permissions": [

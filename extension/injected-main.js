@@ -23,7 +23,7 @@
   let snapshotTimer = null;
 
   window.__JDCHAT_CAPTURE_MAIN_READY__ = {
-    version: "0.2.5",
+    version: "0.2.6",
     networkHooksEnabled: ENABLE_NETWORK_HOOKS,
     receptionChatLogEnabled: ENABLE_RECEPTION_CHATLOG,
     genericNetworkEnabled: ENABLE_GENERIC_NETWORK,

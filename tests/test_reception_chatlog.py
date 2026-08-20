@@ -199,6 +199,30 @@ def test_reception_endpoint_dedupes_into_isolated_tables(tmp_path) -> None:
     ]
 
 
+def test_reception_session_last_message_does_not_regress_on_refresh(tmp_path) -> None:
+    db_path = tmp_path / "jdchat.sqlite3"
+    app = create_app(Settings(database_path=db_path))
+    newer_event = make_reception_event("reception-refresh-newer", mid="9002")
+    newer_event["message"]["created"] = "2026-08-19 21:20:33"
+    older_event = make_reception_event("reception-refresh-older", mid="9001")
+    older_event["message"]["created"] = "2026-08-19 21:12:33"
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/reception/chatlog/events",
+            json={"events": [newer_event, older_event]},
+        )
+        sessions = client.get("/reception/chatlog/sessions")
+
+    assert response.status_code == 200
+    assert response.json()["inserted"] == 2
+    assert sessions.status_code == 200
+    item = sessions.json()["items"][0]
+    assert item["last_mid"] == "9002"
+    assert item["last_message_at"] == "2026-08-19T13:20:33+00:00"
+    assert item["message_count"] == 2
+
+
 def test_reception_list_paginates_and_messages_include_text_and_image(tmp_path) -> None:
     db_path = tmp_path / "jdchat.sqlite3"
     app = create_app(Settings(database_path=db_path))

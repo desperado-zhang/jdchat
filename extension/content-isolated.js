@@ -4,6 +4,7 @@
   const CONTEXT_TYPE = "jdchat-capture-context";
   const RECEPTION_COMMAND_TYPE = "jdchat-reception-collector-command";
   const DEFAULT_CONFIG = {
+    enabled: true,
     captureReceptionChatLog: true,
     captureLegacyRealtime: false,
     captureDom: false,
@@ -13,6 +14,11 @@
     captureXhr: true,
     captureWebSocket: false,
     autoScrollHistory: false,
+    receptionMaxPages: 3,
+    receptionMaxConversations: 30,
+    receptionMaxRuntimeMinutes: 5,
+    receptionAutoRefresh: false,
+    receptionRefreshIntervalMinutes: 10,
   };
   const DEFAULT_RECEPTION_RUN_OPTIONS = {
     maxPages: 3,
@@ -23,6 +29,8 @@
     maxActionDelayMs: 1500,
     pageWaitMs: 1800,
     maxFailures: 3,
+    resetToFirstPage: false,
+    refreshCurrentQuery: false,
   };
   const CONTEXT_RETRY_DELAY_MS = 750;
   const MAX_CONTEXT_RETRY_ATTEMPTS = 8;
@@ -42,6 +50,10 @@
   let receptionCollectorJob = null;
   let receptionNetworkSeenCount = 0;
   let lastReceptionChatLogAt = 0;
+  let receptionRefreshTimer = null;
+  let receptionRefreshNextAt = "";
+  let receptionRefreshRunCount = 0;
+  let receptionRefreshPaused = false;
   let receptionCollectorStatus = initialReceptionCollectorStatus();
 
   bootstrap().catch(() => startWithConfig(DEFAULT_CONFIG));
@@ -58,9 +70,12 @@
     injectMainScript(activeConfig, { receptionEnabled, legacyRealtimeEnabled });
     window.addEventListener("message", onMainWorldMessage, false);
     chrome.runtime.onMessage.addListener(onRuntimeMessage);
+    chrome.storage.onChanged.addListener(onStorageChanged);
     if (legacyRealtimeEnabled && activeConfig.captureDom !== false) setTimeout(startRootWatcher, 1000);
+    if (isReceptionPage()) syncReceptionRefreshSchedule({ immediate: true });
     window.addEventListener("beforeunload", () => {
       if (receptionCollectorJob) receptionCollectorJob.stopRequested = true;
+      clearReceptionRefreshTimer();
       if (rootWatcher) clearInterval(rootWatcher);
       if (observer) observer.disconnect();
     });
@@ -69,6 +84,13 @@
   async function readConfig() {
     const { config } = await chrome.storage.local.get(["config"]);
     return { ...DEFAULT_CONFIG, ...(config || {}) };
+  }
+
+  function onStorageChanged(changes, areaName) {
+    if (areaName !== "local" || !changes.config) return;
+    activeConfig = { ...DEFAULT_CONFIG, ...(changes.config.newValue || {}) };
+    receptionRefreshPaused = false;
+    syncReceptionRefreshSchedule({ immediate: true });
   }
 
   function injectMainScript(config, pageMode) {
@@ -130,13 +152,18 @@
       if (!isReceptionPage()) {
         return { ok: false, error: "当前标签页不是京麦接待工具页面" };
       }
+      receptionRefreshPaused = true;
+      clearReceptionRefreshTimer();
       if (receptionCollectorJob) {
         receptionCollectorJob.stopRequested = true;
         updateReceptionCollectorStatus({ phase: "stopping", lastAction: "等待当前会话处理结束" });
+      } else {
+        updateReceptionCollectorStatus({ lastAction: "已停止自动刷新" });
       }
       return { ok: true, status: publicReceptionCollectorStatus() };
     }
     if (message.command === "start") {
+      receptionRefreshPaused = false;
       return startReceptionCollector(message.options || {});
     }
     return { ok: false, error: "unknown reception collector command" };
@@ -176,9 +203,12 @@
     }
 
     const runOptions = normalizeReceptionRunOptions(options);
+    const autoRefreshRun = options.autoRefreshRun === true;
+    if (autoRefreshRun) receptionRefreshRunCount += 1;
     const job = {
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       options: runOptions,
+      autoRefreshRun,
       stopRequested: false,
       done: false,
       startedAtMs: Date.now(),
@@ -195,7 +225,8 @@
       capturedDetails: 0,
       failures: 0,
       maxFailures: runOptions.maxFailures,
-      lastAction: "准备采集当前查询结果",
+      autoRefreshRunCount: receptionRefreshRunCount,
+      lastAction: autoRefreshRun ? "自动刷新当前查询结果" : "准备采集当前查询结果",
       lastError: "",
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -209,6 +240,14 @@
 
   async function runReceptionCollector(job) {
     updateReceptionCollectorStatus({ phase: "collecting_list", lastAction: "读取当前页可见会话" });
+    if (job.options.refreshCurrentQuery) {
+      updateReceptionCollectorStatus({ phase: "collecting_list", lastAction: "按当前筛选条件重新查询" });
+      await clickReceptionSearchButton(job);
+    }
+    if (job.options.resetToFirstPage) {
+      updateReceptionCollectorStatus({ phase: "collecting_list", lastAction: "返回第一页后刷新当前查询" });
+      await goToReceptionFirstPage(job);
+    }
 
     for (let pageOffset = 0; pageOffset < job.options.maxPages; pageOffset += 1) {
       if (shouldStopReceptionCollector(job)) break;
@@ -309,6 +348,40 @@
     return false;
   }
 
+  async function clickReceptionSearchButton(job) {
+    const searchButton = findReceptionSearchButton();
+    if (!searchButton) {
+      updateReceptionCollectorStatus({ lastAction: "未找到查询按钮，沿用当前列表" });
+      return;
+    }
+    const beforeKey = firstReceptionRowKey();
+    safeClick(searchButton);
+    await delay(job.options.pageWaitMs);
+    await waitForReceptionPageChange(beforeKey, job, 5000);
+  }
+
+  async function goToReceptionFirstPage(job) {
+    const currentPage = readReceptionCurrentPage();
+    if (!currentPage || currentPage <= 1) return;
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (shouldStopReceptionCollector(job)) return;
+      const page = readReceptionCurrentPage();
+      if (page && page <= 1) return;
+
+      const target = findReceptionPageNumberButton(1) || findPrevReceptionPageButton();
+      if (!target) {
+        updateReceptionCollectorStatus({ lastAction: "未找到第一页按钮，从当前页开始" });
+        return;
+      }
+
+      const beforeKey = firstReceptionRowKey();
+      safeClick(target);
+      await delay(job.options.pageWaitMs);
+      await waitForReceptionPageChange(beforeKey, job, 5000);
+    }
+  }
+
   async function clickNextReceptionPage(job) {
     const nextButton = findNextReceptionPageButton();
     if (!nextButton) {
@@ -319,14 +392,18 @@
     const beforeKey = firstReceptionRowKey();
     safeClick(nextButton);
     await delay(job.options.pageWaitMs);
-    const deadline = Date.now() + 5000;
+    await waitForReceptionPageChange(beforeKey, job, 5000);
+    return true;
+  }
+
+  async function waitForReceptionPageChange(beforeKey, job, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (shouldStopReceptionCollector(job)) return false;
+      if (shouldStopReceptionCollector(job)) return;
       const nextKey = firstReceptionRowKey();
-      if (nextKey && nextKey !== beforeKey) return true;
+      if (nextKey && nextKey !== beforeKey) return;
       await delay(250);
     }
-    return true;
   }
 
   async function closeReceptionDrawer() {
@@ -410,6 +487,38 @@
     return candidates.find((node) => isVisible(node) && !isDisabledControl(node)) || null;
   }
 
+  function findReceptionSearchButton() {
+    const candidates = [
+      ...document.querySelectorAll("button, a, span[role='button'], .kf-manage-lite-btn, .action"),
+    ];
+    return candidates.find((node) => {
+      if (!isVisible(node) || isDisabledControl(node)) return false;
+      return elementLabel(node) === "查询";
+    }) || null;
+  }
+
+  function findPrevReceptionPageButton() {
+    const candidates = [
+      ...document.querySelectorAll(
+        ".kf-manage-lite-pagination-prev, .ant-pagination-prev, [title='上一页'], [aria-label='Previous Page']",
+      ),
+    ];
+    return candidates.find((node) => isVisible(node) && !isDisabledControl(node)) || null;
+  }
+
+  function findReceptionPageNumberButton(pageNumber) {
+    const expected = String(pageNumber);
+    const candidates = [
+      ...document.querySelectorAll(
+        ".kf-manage-lite-pagination-item, .ant-pagination-item, .kf-manage-lite-pagination-item-link, .ant-pagination-item-link",
+      ),
+    ];
+    return candidates.find((node) => {
+      if (!isVisible(node) || isDisabledControl(node)) return false;
+      return elementLabel(node) === expected || node.getAttribute("title") === expected;
+    }) || null;
+  }
+
   function readReceptionCurrentPage() {
     const active = document.querySelector(
       ".kf-manage-lite-pagination-item-active, .ant-pagination-item-active",
@@ -455,6 +564,7 @@
       finishedAt: new Date().toISOString(),
     });
     receptionCollectorJob = null;
+    syncReceptionRefreshSchedule({ immediate: false });
   }
 
   function updateReceptionCollectorStatus(patch) {
@@ -472,6 +582,12 @@
       chatLogDrawerVisible: Boolean(findReceptionDrawer()),
       chatLogTableRowCount: findReceptionRows().length,
       lastReceptionChatLogAt,
+      autoRefreshConfigured: activeConfig.receptionAutoRefresh === true,
+      autoRefreshEnabled: receptionAutoRefreshEnabled(),
+      autoRefreshPaused: receptionRefreshPaused,
+      autoRefreshIntervalMinutes: receptionRefreshIntervalMinutes(),
+      nextAutoRefreshAt: receptionRefreshNextAt,
+      autoRefreshRunCount: receptionRefreshRunCount,
     };
   }
 
@@ -490,6 +606,7 @@
       lastError: "",
       startedAt: "",
       finishedAt: "",
+      autoRefreshRunCount: 0,
       updatedAt: new Date().toISOString(),
     };
   }
@@ -527,7 +644,83 @@
         60_000,
         1_800_000,
       ),
+      resetToFirstPage: options.resetToFirstPage === true,
+      refreshCurrentQuery: options.refreshCurrentQuery === true,
     };
+  }
+
+  function syncReceptionRefreshSchedule(options = {}) {
+    if (!isReceptionPage()) {
+      clearReceptionRefreshTimer();
+      return;
+    }
+    if (!receptionAutoRefreshEnabled()) {
+      clearReceptionRefreshTimer();
+      return;
+    }
+    if (receptionCollectorJob && !receptionCollectorJob.done) return;
+    scheduleNextReceptionRefresh(options.immediate ? 3000 : receptionRefreshIntervalMs());
+  }
+
+  function scheduleNextReceptionRefresh(delayMs) {
+    clearReceptionRefreshTimer();
+    receptionRefreshNextAt = new Date(Date.now() + delayMs).toISOString();
+    updateReceptionCollectorStatus({ lastAction: receptionCollectorStatus.lastAction });
+    receptionRefreshTimer = setTimeout(() => {
+      receptionRefreshTimer = null;
+      receptionRefreshNextAt = "";
+      runReceptionRefreshCycle();
+    }, delayMs);
+  }
+
+  function clearReceptionRefreshTimer() {
+    if (receptionRefreshTimer) clearTimeout(receptionRefreshTimer);
+    receptionRefreshTimer = null;
+    receptionRefreshNextAt = "";
+  }
+
+  function runReceptionRefreshCycle() {
+    if (!receptionAutoRefreshEnabled()) return;
+    if (receptionCollectorJob && !receptionCollectorJob.done) {
+      scheduleNextReceptionRefresh(receptionRefreshIntervalMs());
+      return;
+    }
+    startReceptionCollector({
+      maxPages: activeConfig.receptionMaxPages,
+      maxConversations: activeConfig.receptionMaxConversations,
+      maxRuntimeMs: clampPositiveInt(
+        activeConfig.receptionMaxRuntimeMinutes,
+        DEFAULT_CONFIG.receptionMaxRuntimeMinutes,
+        1,
+        30,
+      ) * 60 * 1000,
+      autoRefreshRun: true,
+      resetToFirstPage: true,
+      refreshCurrentQuery: true,
+    });
+  }
+
+  function receptionAutoRefreshEnabled() {
+    return (
+      isReceptionPage() &&
+      !receptionRefreshPaused &&
+      activeConfig.enabled !== false &&
+      activeConfig.captureReceptionChatLog !== false &&
+      activeConfig.receptionAutoRefresh === true
+    );
+  }
+
+  function receptionRefreshIntervalMs() {
+    return receptionRefreshIntervalMinutes() * 60 * 1000;
+  }
+
+  function receptionRefreshIntervalMinutes() {
+    return clampPositiveInt(
+      activeConfig.receptionRefreshIntervalMinutes,
+      DEFAULT_CONFIG.receptionRefreshIntervalMinutes,
+      1,
+      240,
+    );
   }
 
   function clampPositiveInt(value, fallback, min, max) {

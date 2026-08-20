@@ -13,6 +13,11 @@ const DEFAULT_CONFIG = {
   apiToken: "",
   maxBatchSize: 50,
   maxQueueSize: 2000,
+  receptionMaxPages: 3,
+  receptionMaxConversations: 30,
+  receptionMaxRuntimeMinutes: 5,
+  receptionAutoRefresh: false,
+  receptionRefreshIntervalMinutes: 10,
 };
 const RETRY_ALARM_NAME = "jdchat-flush-retry";
 const LEGACY_QUEUE_KEY = "queue";

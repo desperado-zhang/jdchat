@@ -16,6 +16,8 @@ const DEFAULT_CONFIG = {
   receptionMaxPages: 3,
   receptionMaxConversations: 30,
   receptionMaxRuntimeMinutes: 5,
+  receptionAutoRefresh: false,
+  receptionRefreshIntervalMinutes: 10,
 };
 const RECEPTION_COMMAND_TYPE = "jdchat-reception-collector-command";
 
@@ -30,11 +32,13 @@ const CHECKBOX_IDS = [
   "captureXhr",
   "captureWebSocket",
   "autoScrollHistory",
+  "receptionAutoRefresh",
 ];
 const NUMBER_CONFIG_IDS = [
   "receptionMaxPages",
   "receptionMaxConversations",
   "receptionMaxRuntimeMinutes",
+  "receptionRefreshIntervalMinutes",
 ];
 let statusTimer = null;
 
@@ -85,7 +89,7 @@ async function saveConfig() {
     next[id] = numericValue(id, DEFAULT_CONFIG[id]);
   }
   await chrome.storage.local.set({ config: next });
-  setStatus("已保存，刷新相关页面后生效");
+  setStatus("已保存，当前页面会同步配置");
 }
 
 async function startReceptionCollector() {
@@ -113,6 +117,11 @@ async function startReceptionCollector() {
 async function stopReceptionCollector() {
   setCollectorButtons(true);
   try {
+    const autoRefresh = document.getElementById("receptionAutoRefresh");
+    if (autoRefresh && autoRefresh.checked) {
+      autoRefresh.checked = false;
+      await saveConfig();
+    }
     const response = await sendReceptionCommand("stop");
     renderReceptionResponse(response);
   } catch (error) {
@@ -157,11 +166,17 @@ function renderReceptionResponse(response) {
 }
 
 function renderCollectorStatus(status) {
+  const autoRefresh = status.autoRefreshConfigured
+    ? `${status.autoRefreshPaused ? "暂停" : "开启"}，每 ${status.autoRefreshIntervalMinutes || 0} 分钟`
+    : "关闭";
   const text = [
     `状态：${status.label || status.phase || "未知"}`,
     `页数：${status.currentPage || 0}/${status.maxPages || 0}`,
     `会话：${status.openedRows || 0}/${status.maxConversations || 0}`,
     `截获：${status.capturedDetails || 0}，失败：${status.failures || 0}`,
+    `自动：${autoRefresh}`,
+    status.nextAutoRefreshAt ? `下次：${formatDateTime(status.nextAutoRefreshAt)}` : "",
+    status.autoRefreshRunCount ? `自动轮次：${status.autoRefreshRunCount}` : "",
     status.lastAction ? `动作：${status.lastAction}` : "",
     status.lastError ? `错误：${status.lastError}` : "",
   ]
@@ -187,6 +202,12 @@ function numericValue(id, fallback) {
 function positiveInt(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function formatDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", { hour12: false });
 }
 
 function setStatus(message) {
