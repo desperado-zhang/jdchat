@@ -194,6 +194,31 @@ CREATE TABLE IF NOT EXISTS reception_chatlog_events (
 CREATE INDEX IF NOT EXISTS idx_reception_chatlog_events_received_at
   ON reception_chatlog_events (received_at DESC);
 
+CREATE TABLE IF NOT EXISTS reception_chatlog_capture_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_key TEXT NOT NULL UNIQUE,
+  capture_date TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  status TEXT NOT NULL,
+  total_count INTEGER,
+  total_pages INTEGER,
+  current_page INTEGER,
+  opened_rows INTEGER,
+  captured_details INTEGER,
+  stable_rounds INTEGER,
+  failure_count INTEGER,
+  last_error TEXT,
+  last_action TEXT,
+  status_payload TEXT,
+  started_at TEXT,
+  finished_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_reception_chatlog_capture_jobs_date
+  ON reception_chatlog_capture_jobs (capture_date DESC, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   actor_type TEXT NOT NULL,

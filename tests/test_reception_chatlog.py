@@ -223,6 +223,127 @@ def test_reception_session_last_message_does_not_regress_on_refresh(tmp_path) ->
     assert item["message_count"] == 2
 
 
+def test_reception_incremental_capture_inserts_only_new_messages(tmp_path) -> None:
+    db_path = tmp_path / "jdchat.sqlite3"
+    app = create_app(Settings(database_path=db_path))
+    first_event = make_reception_event("reception-incremental-first", mid="9001")
+    repeated_event = make_reception_event("reception-incremental-repeat", mid="9001")
+    newer_event = make_reception_event("reception-incremental-newer", mid="9002")
+    newer_event["message"]["created"] = "2026-08-19 21:22:33"
+    newer_event["message"]["content"] = "新增消息"
+
+    with TestClient(app) as client:
+        initial = client.post("/reception/chatlog/events", json={"events": [first_event]})
+        incremental = client.post(
+            "/reception/chatlog/events",
+            json={"events": [repeated_event, newer_event]},
+        )
+        stats = client.get("/reception/chatlog/stats")
+        sessions = client.get("/reception/chatlog/sessions")
+
+    assert initial.status_code == 200
+    assert initial.json()["inserted"] == 1
+    assert incremental.status_code == 200
+    assert incremental.json()["accepted"] == 2
+    assert incremental.json()["inserted"] == 1
+    assert incremental.json()["duplicates"] == 1
+    assert stats.status_code == 200
+    assert stats.json()["totals"] == {"sessions": 1, "messages": 2, "events": 3}
+    item = sessions.json()["items"][0]
+    assert item["last_mid"] == "9002"
+    assert item["last_message_at"] == "2026-08-19T13:22:33+00:00"
+    assert item["message_count"] == 2
+
+
+def test_reception_capture_job_progress_upserts_and_reports_latest(tmp_path) -> None:
+    db_path = tmp_path / "jdchat.sqlite3"
+    app = create_app(Settings(database_path=db_path))
+
+    with TestClient(app) as client:
+        running = client.post(
+            "/reception/chatlog/capture-jobs",
+            json={
+                "jobKey": "reception_chatlog:2026-08-20",
+                "captureDate": "2026-08-20",
+                "mode": "backfill_today",
+                "status": "running",
+                "totalCount": 479,
+                "totalPages": 48,
+                "currentPage": 12,
+                "openedRows": 120,
+                "capturedDetails": 120,
+                "lastAction": "按当天列表全量采集 479 条",
+            },
+        )
+        finished = client.post(
+            "/reception/chatlog/capture-jobs",
+            json={
+                "jobKey": "reception_chatlog:2026-08-20",
+                "captureDate": "2026-08-20",
+                "mode": "backfill_today",
+                "status": "finished",
+                "totalCount": 479,
+                "totalPages": 48,
+                "currentPage": 48,
+                "openedRows": 479,
+                "capturedDetails": 479,
+                "stableRounds": 1,
+            },
+        )
+        jobs = client.get("/reception/chatlog/capture-jobs?capture_date=2026-08-20")
+        stats = client.get("/reception/chatlog/stats")
+
+    assert running.status_code == 200
+    assert finished.status_code == 200
+    assert jobs.status_code == 200
+    assert len(jobs.json()["items"]) == 1
+    item = jobs.json()["items"][0]
+    assert item["status"] == "finished"
+    assert item["total_count"] == 479
+    assert item["total_pages"] == 48
+    assert item["opened_rows"] == 479
+    assert stats.status_code == 200
+    latest_job = stats.json()["latest_capture_job"]
+    assert latest_job["job_key"] == "reception_chatlog:2026-08-20"
+    assert latest_job["status"] == "finished"
+
+
+def test_reception_capture_job_running_clears_previous_finished_at(tmp_path) -> None:
+    db_path = tmp_path / "jdchat.sqlite3"
+    app = create_app(Settings(database_path=db_path))
+
+    with TestClient(app) as client:
+        finished = client.post(
+            "/reception/chatlog/capture-jobs",
+            json={
+                "jobKey": "reception_chatlog:2026-08-20",
+                "captureDate": "2026-08-20",
+                "mode": "incremental",
+                "status": "finished",
+                "startedAt": "2026-08-20T02:00:00+00:00",
+                "finishedAt": "2026-08-20T02:01:00+00:00",
+            },
+        )
+        running = client.post(
+            "/reception/chatlog/capture-jobs",
+            json={
+                "jobKey": "reception_chatlog:2026-08-20",
+                "captureDate": "2026-08-20",
+                "mode": "backfill_today",
+                "status": "running",
+                "startedAt": "2026-08-20T03:00:00+00:00",
+            },
+        )
+
+    assert finished.status_code == 200
+    assert running.status_code == 200
+    item = running.json()["item"]
+    assert item["status"] == "running"
+    assert item["mode"] == "backfill_today"
+    assert item["started_at"] == "2026-08-20T03:00:00+00:00"
+    assert item["finished_at"] is None
+
+
 def test_reception_list_paginates_and_messages_include_text_and_image(tmp_path) -> None:
     db_path = tmp_path / "jdchat.sqlite3"
     app = create_app(Settings(database_path=db_path))

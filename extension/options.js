@@ -13,11 +13,14 @@ const DEFAULT_CONFIG = {
   apiToken: "",
   maxBatchSize: 50,
   maxQueueSize: 2000,
-  receptionMaxPages: 3,
-  receptionMaxConversations: 30,
-  receptionMaxRuntimeMinutes: 5,
-  receptionAutoRefresh: false,
-  receptionRefreshIntervalMinutes: 10,
+  receptionMaxPages: 500,
+  receptionMaxConversations: 10000,
+  receptionMaxRuntimeMinutes: 120,
+  receptionDailyFullCapture: true,
+  receptionAutoRefresh: true,
+  receptionRefreshIntervalMinutes: 3,
+  receptionIncrementalPages: 5,
+  receptionStableTailRounds: 2,
 };
 const RECEPTION_COMMAND_TYPE = "jdchat-reception-collector-command";
 
@@ -32,6 +35,7 @@ const CHECKBOX_IDS = [
   "captureXhr",
   "captureWebSocket",
   "autoScrollHistory",
+  "receptionDailyFullCapture",
   "receptionAutoRefresh",
 ];
 const NUMBER_CONFIG_IDS = [
@@ -39,6 +43,8 @@ const NUMBER_CONFIG_IDS = [
   "receptionMaxConversations",
   "receptionMaxRuntimeMinutes",
   "receptionRefreshIntervalMinutes",
+  "receptionIncrementalPages",
+  "receptionStableTailRounds",
 ];
 let statusTimer = null;
 
@@ -105,6 +111,10 @@ async function startReceptionCollector() {
       ),
       maxRuntimeMs:
         positiveInt(config.receptionMaxRuntimeMinutes, DEFAULT_CONFIG.receptionMaxRuntimeMinutes) * 60 * 1000,
+      mode: config.receptionDailyFullCapture === false ? "manual" : "backfill_today",
+      autoDetectTotal: config.receptionDailyFullCapture !== false,
+      refreshCurrentQuery: true,
+      resetToFirstPage: true,
     });
     renderReceptionResponse(response);
   } catch (error) {
@@ -171,9 +181,13 @@ function renderCollectorStatus(status) {
     : "关闭";
   const text = [
     `状态：${status.label || status.phase || "未知"}`,
+    status.mode ? `模式：${formatCollectorMode(status.mode)}` : "",
+    status.captureDate ? `日期：${status.captureDate}` : "",
     `页数：${status.currentPage || 0}/${status.maxPages || 0}`,
+    status.totalCount || status.totalPages ? `总量：${status.totalCount || 0} 条 / ${status.totalPages || 0} 页` : "",
     `会话：${status.openedRows || 0}/${status.maxConversations || 0}`,
     `截获：${status.capturedDetails || 0}，失败：${status.failures || 0}`,
+    status.stableRounds ? `追平：${status.stableRounds}` : "",
     `自动：${autoRefresh}`,
     status.nextAutoRefreshAt ? `下次：${formatDateTime(status.nextAutoRefreshAt)}` : "",
     status.autoRefreshRunCount ? `自动轮次：${status.autoRefreshRunCount}` : "",
@@ -183,6 +197,16 @@ function renderCollectorStatus(status) {
     .filter(Boolean)
     .join("\n");
   document.getElementById("collectorStatus").textContent = text;
+}
+
+function formatCollectorMode(mode) {
+  const labels = {
+    manual: "手动采集",
+    backfill_today: "今日全量补抓",
+    incremental: "增量巡检",
+    tail_check: "追平确认",
+  };
+  return labels[mode] || mode;
 }
 
 function renderCollectorError(error) {

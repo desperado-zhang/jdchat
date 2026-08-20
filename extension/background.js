@@ -13,15 +13,20 @@ const DEFAULT_CONFIG = {
   apiToken: "",
   maxBatchSize: 50,
   maxQueueSize: 2000,
-  receptionMaxPages: 3,
-  receptionMaxConversations: 30,
-  receptionMaxRuntimeMinutes: 5,
-  receptionAutoRefresh: false,
-  receptionRefreshIntervalMinutes: 10,
+  receptionMaxPages: 500,
+  receptionMaxConversations: 10000,
+  receptionMaxRuntimeMinutes: 120,
+  receptionDailyFullCapture: true,
+  receptionAutoRefresh: true,
+  receptionRefreshIntervalMinutes: 3,
+  receptionIncrementalPages: 5,
+  receptionStableTailRounds: 2,
 };
 const RETRY_ALARM_NAME = "jdchat-flush-retry";
 const LEGACY_QUEUE_KEY = "queue";
 const RECEPTION_QUEUE_KEY = "receptionQueue";
+const CAPTURE_EVENT_MESSAGE_TYPE = "jdchat-capture-event";
+const RECEPTION_PROGRESS_MESSAGE_TYPE = "jdchat-reception-capture-progress";
 
 let flushTimer = null;
 let flushing = false;
@@ -45,7 +50,16 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (!message || message.type !== "jdchat-capture-event") return false;
+  if (!message || !message.type) return false;
+
+  if (message.type === RECEPTION_PROGRESS_MESSAGE_TYPE) {
+    postReceptionProgress(message.progress)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: String(error && error.message ? error.message : error) }));
+    return true;
+  }
+
+  if (message.type !== CAPTURE_EVENT_MESSAGE_TYPE) return false;
 
   enqueueEvent(message.event)
     .then((result) => sendResponse(result))
@@ -157,6 +171,31 @@ async function flushQueueKey(config, queueKey, endpointPath) {
   await writeQueue(queueKey, remaining);
   if (remaining.length) scheduleFlush(500);
   return true;
+}
+
+async function postReceptionProgress(progress) {
+  const config = await readConfig();
+  if (!config.enabled || config.captureReceptionChatLog === false) {
+    return { ok: true, disabled: true };
+  }
+  if (!progress || typeof progress !== "object") {
+    return { ok: false, error: "invalid reception progress" };
+  }
+
+  const headers = { "Content-Type": "application/json" };
+  if (config.apiToken) headers.Authorization = `Bearer ${config.apiToken}`;
+  let response;
+  try {
+    response = await fetch(`${config.gatewayUrl.replace(/\/$/, "")}/reception/chatlog/capture-jobs`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(progress),
+    });
+  } catch (error) {
+    return { ok: false, error: String(error && error.message ? error.message : error) };
+  }
+  if (!response.ok) return { ok: false, status: response.status };
+  return response.json().catch(() => ({ ok: true }));
 }
 
 async function ensureRetryAlarm() {

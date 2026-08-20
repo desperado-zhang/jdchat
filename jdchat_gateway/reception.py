@@ -72,6 +72,27 @@ class ReceptionCaptureResponse(BaseModel):
     rejected: list[ReceptionCaptureRejected]
 
 
+class ReceptionCaptureJobProgressIn(BaseModel):
+    job_key: str | None = Field(default=None, alias="jobKey")
+    capture_date: str | None = Field(default=None, alias="captureDate")
+    mode: str = "unknown"
+    capture_status: str = Field(default="running", alias="status")
+    total_count: int | None = Field(default=None, alias="totalCount")
+    total_pages: int | None = Field(default=None, alias="totalPages")
+    current_page: int | None = Field(default=None, alias="currentPage")
+    opened_rows: int | None = Field(default=None, alias="openedRows")
+    captured_details: int | None = Field(default=None, alias="capturedDetails")
+    stable_rounds: int | None = Field(default=None, alias="stableRounds")
+    failure_count: int | None = Field(default=None, alias="failureCount")
+    last_error: str | None = Field(default=None, alias="lastError")
+    last_action: str | None = Field(default=None, alias="lastAction")
+    status_payload: dict[str, Any] | None = Field(default=None, alias="statusPayload")
+    started_at: str | None = Field(default=None, alias="startedAt")
+    finished_at: str | None = Field(default=None, alias="finishedAt")
+
+    model_config = {"populate_by_name": True, "extra": "allow"}
+
+
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -679,6 +700,120 @@ def record_reception_chatlog_event(conn: sqlite3.Connection, normalized: dict[st
     )
 
 
+def upsert_reception_capture_job(
+    conn: sqlite3.Connection,
+    progress: ReceptionCaptureJobProgressIn,
+) -> dict[str, Any]:
+    capture_date = progress.capture_date or datetime.now(SHANGHAI_TZ).date().isoformat()
+    job_key = progress.job_key or f"reception_chatlog:{capture_date}"
+    now = now_iso()
+    started_at = progress.started_at or now
+    finished_at = progress.finished_at
+    if not finished_at and progress.capture_status in {"finished", "failed", "stopped"}:
+        finished_at = now
+
+    values = {
+        "job_key": job_key,
+        "capture_date": capture_date,
+        "mode": progress.mode,
+        "status": progress.capture_status,
+        "total_count": progress.total_count,
+        "total_pages": progress.total_pages,
+        "current_page": progress.current_page,
+        "opened_rows": progress.opened_rows,
+        "captured_details": progress.captured_details,
+        "stable_rounds": progress.stable_rounds,
+        "failure_count": progress.failure_count,
+        "last_error": progress.last_error,
+        "last_action": progress.last_action,
+        "status_payload": compact_json(progress.status_payload),
+        "started_at": started_at,
+        "finished_at": finished_at,
+    }
+    conn.execute(
+        """
+        INSERT INTO reception_chatlog_capture_jobs (
+          job_key, capture_date, mode, status, total_count, total_pages,
+          current_page, opened_rows, captured_details, stable_rounds, failure_count,
+          last_error, last_action, status_payload, started_at, finished_at
+        )
+        VALUES (
+          :job_key, :capture_date, :mode, :status, :total_count, :total_pages,
+          :current_page, :opened_rows, :captured_details, :stable_rounds,
+          :failure_count, :last_error, :last_action, :status_payload, :started_at,
+          :finished_at
+        )
+        ON CONFLICT(job_key) DO UPDATE SET
+          capture_date = excluded.capture_date,
+          mode = excluded.mode,
+          status = excluded.status,
+          total_count = COALESCE(excluded.total_count, reception_chatlog_capture_jobs.total_count),
+          total_pages = COALESCE(excluded.total_pages, reception_chatlog_capture_jobs.total_pages),
+          current_page = COALESCE(excluded.current_page, reception_chatlog_capture_jobs.current_page),
+          opened_rows = COALESCE(excluded.opened_rows, reception_chatlog_capture_jobs.opened_rows),
+          captured_details = COALESCE(excluded.captured_details, reception_chatlog_capture_jobs.captured_details),
+          stable_rounds = COALESCE(excluded.stable_rounds, reception_chatlog_capture_jobs.stable_rounds),
+          failure_count = COALESCE(excluded.failure_count, reception_chatlog_capture_jobs.failure_count),
+          last_error = COALESCE(excluded.last_error, reception_chatlog_capture_jobs.last_error),
+          last_action = COALESCE(excluded.last_action, reception_chatlog_capture_jobs.last_action),
+          status_payload = COALESCE(excluded.status_payload, reception_chatlog_capture_jobs.status_payload),
+          started_at = COALESCE(excluded.started_at, reception_chatlog_capture_jobs.started_at),
+          finished_at = CASE
+            WHEN excluded.status IN ('finished', 'failed', 'stopped') THEN excluded.finished_at
+            ELSE NULL
+          END,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        values,
+    )
+    return get_reception_capture_job(conn, job_key) or values
+
+
+def get_reception_capture_job(conn: sqlite3.Connection, job_key: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT job_key, capture_date, mode, status, total_count, total_pages,
+               current_page, opened_rows, captured_details, stable_rounds, failure_count,
+               last_error, last_action, started_at, finished_at, created_at, updated_at
+        FROM reception_chatlog_capture_jobs
+        WHERE job_key = ?
+        """,
+        (job_key,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_reception_capture_jobs(
+    conn: sqlite3.Connection,
+    limit: int,
+    *,
+    capture_date: str | None = None,
+) -> list[dict[str, Any]]:
+    params: list[Any] = []
+    where = ""
+    if capture_date:
+        where = "WHERE capture_date = ?"
+        params.append(capture_date)
+    rows = conn.execute(
+        f"""
+        SELECT job_key, capture_date, mode, status, total_count, total_pages,
+               current_page, opened_rows, captured_details, stable_rounds, failure_count,
+               last_error, last_action, started_at, finished_at, created_at, updated_at
+        FROM reception_chatlog_capture_jobs
+        {where}
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?
+        """,
+        (*params, limit),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def latest_reception_capture_job(conn: sqlite3.Connection) -> dict[str, Any] | None:
+    rows = list_reception_capture_jobs(conn, 1)
+    return rows[0] if rows else None
+
+
 def list_reception_chatlog_sessions(
     conn: sqlite3.Connection,
     limit: int,
@@ -1072,6 +1207,7 @@ def reception_chatlog_stats(conn: sqlite3.Connection) -> dict[str, Any]:
         "totals": dict(totals) if totals else {},
         "latest_message": dict(latest_message) if latest_message else None,
         "event_sources": [dict(row) for row in event_sources],
+        "latest_capture_job": latest_reception_capture_job(conn),
     }
 
 

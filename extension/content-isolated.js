@@ -3,6 +3,8 @@
   const MESSAGE_TYPE = "jdchat-capture-event";
   const CONTEXT_TYPE = "jdchat-capture-context";
   const RECEPTION_COMMAND_TYPE = "jdchat-reception-collector-command";
+  const RECEPTION_PROGRESS_MESSAGE_TYPE = "jdchat-reception-capture-progress";
+  const RECEPTION_DAILY_STATE_KEY = "receptionDailyCaptureState";
   const DEFAULT_CONFIG = {
     enabled: true,
     captureReceptionChatLog: true,
@@ -14,23 +16,30 @@
     captureXhr: true,
     captureWebSocket: false,
     autoScrollHistory: false,
-    receptionMaxPages: 3,
-    receptionMaxConversations: 30,
-    receptionMaxRuntimeMinutes: 5,
-    receptionAutoRefresh: false,
-    receptionRefreshIntervalMinutes: 10,
+    receptionMaxPages: 500,
+    receptionMaxConversations: 10000,
+    receptionMaxRuntimeMinutes: 120,
+    receptionDailyFullCapture: true,
+    receptionAutoRefresh: true,
+    receptionRefreshIntervalMinutes: 3,
+    receptionIncrementalPages: 5,
+    receptionStableTailRounds: 2,
   };
   const DEFAULT_RECEPTION_RUN_OPTIONS = {
-    maxPages: 3,
-    maxConversations: 30,
-    maxRuntimeMs: 5 * 60 * 1000,
+    mode: "manual",
+    maxPages: 500,
+    maxConversations: 10000,
+    maxRuntimeMs: 120 * 60 * 1000,
     detailWaitMs: 8000,
     minActionDelayMs: 800,
     maxActionDelayMs: 1500,
     pageWaitMs: 1800,
-    maxFailures: 3,
+    maxFailures: 20,
     resetToFirstPage: false,
     refreshCurrentQuery: false,
+    autoDetectTotal: false,
+    incrementalPages: 5,
+    stableTailRounds: 2,
   };
   const CONTEXT_RETRY_DELAY_MS = 750;
   const MAX_CONTEXT_RETRY_ATTEMPTS = 8;
@@ -110,6 +119,11 @@
 
   function isReceptionPage() {
     return location.hostname === "shop.jd.com" && location.pathname.includes("/jdm/kefu/kf-manage-lite");
+  }
+
+  function hasReceptionChatlogSurface() {
+    if (!isReceptionPage()) return false;
+    return Boolean(findReceptionRows().length || findReceptionSearchButton());
   }
 
   function isDongdongPage() {
@@ -205,19 +219,28 @@
     const runOptions = normalizeReceptionRunOptions(options);
     const autoRefreshRun = options.autoRefreshRun === true;
     if (autoRefreshRun) receptionRefreshRunCount += 1;
+    const captureDate = options.captureDate || localDateKey();
     const job = {
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      jobKey: `reception_chatlog:${captureDate}`,
+      mode: runOptions.mode,
+      captureDate,
       options: runOptions,
       autoRefreshRun,
       stopRequested: false,
       done: false,
       startedAtMs: Date.now(),
       seenRowKeys: new Set(),
+      totalCount: 0,
+      totalPages: 0,
+      stableRounds: 0,
     };
     receptionCollectorJob = job;
     receptionCollectorStatus = {
       phase: "ready",
       label: receptionCollectorPhaseLabel("ready"),
+      mode: job.mode,
+      captureDate,
       currentPage: readReceptionCurrentPage() || 1,
       maxPages: runOptions.maxPages,
       openedRows: 0,
@@ -225,12 +248,16 @@
       capturedDetails: 0,
       failures: 0,
       maxFailures: runOptions.maxFailures,
+      totalCount: 0,
+      totalPages: 0,
+      stableRounds: 0,
       autoRefreshRunCount: receptionRefreshRunCount,
       lastAction: autoRefreshRun ? "自动刷新当前查询结果" : "准备采集当前查询结果",
       lastError: "",
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    reportReceptionCaptureProgress(job, "running");
 
     runReceptionCollector(job).catch((error) => {
       finishReceptionCollector(job, "failed", String(error && error.message ? error.message : error));
@@ -248,6 +275,8 @@
       updateReceptionCollectorStatus({ phase: "collecting_list", lastAction: "返回第一页后刷新当前查询" });
       await goToReceptionFirstPage(job);
     }
+    await waitForReceptionRows(job);
+    prepareReceptionRunBounds(job);
 
     for (let pageOffset = 0; pageOffset < job.options.maxPages; pageOffset += 1) {
       if (shouldStopReceptionCollector(job)) break;
@@ -265,11 +294,12 @@
         const row = rows[rowIndex];
         rowIndex += 1;
 
-        const rowKey = hashString(receptionRowText(row));
+        const rowKey = `${currentPage}:${rowIndex}:${hashString(receptionRowText(row))}`;
         if (job.seenRowKeys.has(rowKey)) continue;
         job.seenRowKeys.add(rowKey);
         await collectReceptionRow(row, job, rowIndex);
       }
+      reportReceptionCaptureProgress(job, "running");
 
       if (receptionCollectorStatus.openedRows >= job.options.maxConversations) break;
       if (receptionCollectorStatus.failures >= job.options.maxFailures) break;
@@ -301,6 +331,7 @@
     if (shouldStopReceptionCollector(job)) return;
 
     const beforeNetworkCount = receptionNetworkSeenCount;
+    const clickStartedAt = Date.now();
     updateReceptionCollectorStatus({
       phase: "opening_detail",
       lastAction: `打开第 ${rowIndex} 行查看`,
@@ -310,12 +341,18 @@
       openedRows: receptionCollectorStatus.openedRows + 1,
     });
 
-    const captured = await waitForReceptionChatLog(beforeNetworkCount, job);
+    const captured = await waitForReceptionChatLog(beforeNetworkCount, clickStartedAt, job);
     if (captured) {
       updateReceptionCollectorStatus({
         phase: "collecting_detail",
         capturedDetails: receptionCollectorStatus.capturedDetails + 1,
         lastAction: "已捕获聊天明细接口",
+        lastError: "",
+      });
+    } else if (findReceptionDrawer()) {
+      updateReceptionCollectorStatus({
+        phase: "collecting_detail",
+        lastAction: "查看抽屉已打开，本轮未触发新的明细接口",
         lastError: "",
       });
     } else {
@@ -324,7 +361,7 @@
 
     updateReceptionCollectorStatus({ phase: "closing_detail", lastAction: "关闭聊天明细抽屉" });
     const closed = await closeReceptionDrawer();
-    if (!closed) incrementReceptionFailure("聊天明细抽屉关闭超时");
+    if (!closed && findReceptionDrawer()) incrementReceptionFailure("聊天明细抽屉关闭超时");
     await delay(randomInt(300, 700));
   }
 
@@ -338,11 +375,36 @@
     throw new Error("当前页面没有可采集的查看按钮，请先进入聊天记录列表并查询");
   }
 
-  async function waitForReceptionChatLog(beforeNetworkCount, job) {
+  function prepareReceptionRunBounds(job) {
+    const pageInfo = readReceptionPaginationInfo();
+    job.totalCount = pageInfo.totalCount || 0;
+    job.totalPages = pageInfo.totalPages || 0;
+
+    if (job.options.autoDetectTotal && pageInfo.totalPages) {
+      job.options.maxPages = Math.min(pageInfo.totalPages, job.options.maxPages);
+    }
+    if (job.options.autoDetectTotal && pageInfo.totalCount) {
+      job.options.maxConversations = Math.min(pageInfo.totalCount, job.options.maxConversations);
+    }
+    updateReceptionCollectorStatus({
+      totalCount: job.totalCount,
+      totalPages: job.totalPages,
+      maxPages: job.options.maxPages,
+      maxConversations: job.options.maxConversations,
+      lastAction:
+        job.options.mode === "backfill_today"
+          ? `按当天列表全量采集 ${job.totalCount || "未知"} 条`
+          : receptionCollectorStatus.lastAction,
+    });
+    reportReceptionCaptureProgress(job, "running");
+  }
+
+  async function waitForReceptionChatLog(beforeNetworkCount, clickStartedAt, job) {
     const deadline = Date.now() + job.options.detailWaitMs;
     while (Date.now() < deadline) {
       if (shouldStopReceptionCollector(job)) return false;
       if (receptionNetworkSeenCount > beforeNetworkCount) return true;
+      if (lastReceptionChatLogAt >= clickStartedAt - 500) return true;
       await delay(250);
     }
     return false;
@@ -414,15 +476,16 @@
     if (closeButton) {
       safeClick(closeButton);
     } else {
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      dispatchEscapeToCloseDrawer();
     }
 
     const deadline = Date.now() + 8000;
     while (Date.now() < deadline) {
       if (!findReceptionDrawer()) return true;
+      dispatchEscapeToCloseDrawer();
       await delay(150);
     }
-    return false;
+    return !findReceptionDrawer();
   }
 
   function findReceptionRows() {
@@ -471,11 +534,22 @@
       "button[aria-label*='关闭']",
       "button[title*='关闭']",
     ];
-    for (const selector of selectors) {
-      const node = drawer.querySelector(selector);
-      if (node && isVisible(node) && !isDisabledControl(node)) return node;
+    for (const root of [drawer, document]) {
+      for (const selector of selectors) {
+        const node = root.querySelector(selector);
+        if (node && isVisible(node) && !isDisabledControl(node)) return node;
+      }
     }
     return null;
+  }
+
+  function dispatchEscapeToCloseDrawer() {
+    const eventInit = { key: "Escape", code: "Escape", bubbles: true, cancelable: true };
+    for (const target of [document.activeElement, document.body, document, window]) {
+      if (!target || typeof target.dispatchEvent !== "function") continue;
+      target.dispatchEvent(new KeyboardEvent("keydown", eventInit));
+      target.dispatchEvent(new KeyboardEvent("keyup", eventInit));
+    }
   }
 
   function findNextReceptionPageButton() {
@@ -527,6 +601,28 @@
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
+  function readReceptionPaginationInfo() {
+    const bodyText = text(document.body);
+    const totalMatch = bodyText.match(/共\s*([\d,]+)\s*条/);
+    const totalCount = totalMatch ? Number.parseInt(totalMatch[1].replace(/,/g, ""), 10) : 0;
+    const pageNumbers = [
+      ...document.querySelectorAll(
+        ".kf-manage-lite-pagination-item, .ant-pagination-item, .kf-manage-lite-pagination-item-link, .ant-pagination-item-link",
+      ),
+    ]
+      .map((node) => Number.parseInt(elementLabel(node) || node.getAttribute("title") || "", 10))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const rowCount = findReceptionRows().length;
+    const visibleMaxPage = pageNumbers.length ? Math.max(...pageNumbers) : 0;
+    const inferredTotalPages = totalCount && rowCount ? Math.ceil(totalCount / rowCount) : 0;
+    const totalPages = Math.max(visibleMaxPage, inferredTotalPages);
+    return {
+      totalCount: Number.isFinite(totalCount) ? totalCount : 0,
+      totalPages: Number.isFinite(totalPages) ? totalPages : 0,
+      rowCount,
+    };
+  }
+
   function firstReceptionRowKey() {
     const row = findReceptionRows()[0];
     return row ? hashString(receptionRowText(row)) : "";
@@ -557,14 +653,19 @@
   function finishReceptionCollector(job, phase, error = "") {
     if (receptionCollectorJob !== job) return;
     job.done = true;
+    const terminalStatus = phase === "finished" ? "finished" : phase === "failed" ? "failed" : "stopped";
     updateReceptionCollectorStatus({
       phase,
       lastAction: receptionCollectorPhaseLabel(phase),
       lastError: error || receptionCollectorStatus.lastError,
       finishedAt: new Date().toISOString(),
     });
+    persistReceptionDailyState(job, terminalStatus).catch(() => undefined);
+    reportReceptionCaptureProgress(job, terminalStatus);
     receptionCollectorJob = null;
-    syncReceptionRefreshSchedule({ immediate: false });
+    syncReceptionRefreshSchedule({
+      immediate: job.autoRefreshRun && job.mode === "backfill_today" && phase === "finished",
+    });
   }
 
   function updateReceptionCollectorStatus(patch) {
@@ -591,10 +692,90 @@
     };
   }
 
+  async function readReceptionDailyState() {
+    const stored = await chrome.storage.local.get([RECEPTION_DAILY_STATE_KEY]);
+    const state = stored[RECEPTION_DAILY_STATE_KEY];
+    return state && typeof state === "object" ? state : {};
+  }
+
+  async function persistReceptionDailyState(job, terminalStatus) {
+    if (!job || !job.captureDate) return;
+    const current = await readReceptionDailyState();
+    const previousTotal = Number.parseInt(current.totalCount, 10) || 0;
+    let scheduleImmediateBackfill = false;
+    const next = {
+      ...current,
+      captureDate: job.captureDate,
+      jobKey: job.jobKey,
+      lastMode: job.mode,
+      lastStatus: terminalStatus,
+      totalCount: job.totalCount || receptionCollectorStatus.totalCount || current.totalCount || 0,
+      totalPages: job.totalPages || receptionCollectorStatus.totalPages || current.totalPages || 0,
+      lastOpenedRows: receptionCollectorStatus.openedRows || 0,
+      lastCapturedDetails: receptionCollectorStatus.capturedDetails || 0,
+      lastRunAt: new Date().toISOString(),
+    };
+
+    if (job.mode === "backfill_today" && terminalStatus === "finished") {
+      next.fullStatus = "finished";
+      next.fullCompletedAt = new Date().toISOString();
+      next.stableRounds = Math.max(Number.parseInt(current.stableRounds, 10) || 0, 1);
+    } else if (job.mode === "incremental" && terminalStatus === "finished") {
+      const nextTotal = Number.parseInt(next.totalCount, 10) || 0;
+      const coveredRows = receptionCollectorStatus.openedRows || 0;
+      if (previousTotal && nextTotal > previousTotal && nextTotal - previousTotal > coveredRows) {
+        next.fullStatus = "needs_backfill";
+        next.stableRounds = 0;
+        scheduleImmediateBackfill = true;
+      } else {
+        next.fullStatus = current.fullStatus || "finished";
+        next.stableRounds = (Number.parseInt(current.stableRounds, 10) || 0) + 1;
+      }
+    } else if (terminalStatus === "failed") {
+      next.fullStatus = current.fullStatus || "needs_backfill";
+    }
+
+    await chrome.storage.local.set({ [RECEPTION_DAILY_STATE_KEY]: next });
+    if (scheduleImmediateBackfill) syncReceptionRefreshSchedule({ immediate: true });
+  }
+
+  function reportReceptionCaptureProgress(job, status) {
+    if (!job || !job.options || activeConfig.captureReceptionChatLog === false) return;
+    const phase = receptionCollectorStatus.phase || "idle";
+    const payload = {
+      jobKey: job.jobKey,
+      captureDate: job.captureDate,
+      mode: job.mode,
+      status,
+      totalCount: job.totalCount || receptionCollectorStatus.totalCount || 0,
+      totalPages: job.totalPages || receptionCollectorStatus.totalPages || 0,
+      currentPage: receptionCollectorStatus.currentPage || 0,
+      openedRows: receptionCollectorStatus.openedRows || 0,
+      capturedDetails: receptionCollectorStatus.capturedDetails || 0,
+      stableRounds: receptionCollectorStatus.stableRounds || job.stableRounds || 0,
+      failureCount: receptionCollectorStatus.failures || 0,
+      lastError: receptionCollectorStatus.lastError || "",
+      lastAction: receptionCollectorStatus.lastAction || "",
+      startedAt: receptionCollectorStatus.startedAt || new Date(job.startedAtMs).toISOString(),
+      finishedAt: receptionCollectorStatus.finishedAt || undefined,
+      statusPayload: {
+        phase,
+        label: receptionCollectorStatus.label || receptionCollectorPhaseLabel(phase),
+        maxPages: job.options.maxPages,
+        maxConversations: job.options.maxConversations,
+        autoRefreshRun: job.autoRefreshRun,
+        runCount: receptionRefreshRunCount,
+      },
+    };
+    chrome.runtime.sendMessage({ type: RECEPTION_PROGRESS_MESSAGE_TYPE, progress: payload }).catch(() => undefined);
+  }
+
   function initialReceptionCollectorStatus() {
     return {
       phase: "idle",
       label: receptionCollectorPhaseLabel("idle"),
+      mode: "",
+      captureDate: "",
       currentPage: 0,
       maxPages: DEFAULT_RECEPTION_RUN_OPTIONS.maxPages,
       openedRows: 0,
@@ -602,6 +783,9 @@
       capturedDetails: 0,
       failures: 0,
       maxFailures: DEFAULT_RECEPTION_RUN_OPTIONS.maxFailures,
+      totalCount: 0,
+      totalPages: 0,
+      stableRounds: 0,
       lastAction: "",
       lastError: "",
       startedAt: "",
@@ -631,22 +815,40 @@
   function normalizeReceptionRunOptions(options) {
     return {
       ...DEFAULT_RECEPTION_RUN_OPTIONS,
-      maxPages: clampPositiveInt(options.maxPages, DEFAULT_RECEPTION_RUN_OPTIONS.maxPages, 1, 10),
+      mode: normalizeReceptionRunMode(options.mode),
+      maxPages: clampPositiveInt(options.maxPages, DEFAULT_RECEPTION_RUN_OPTIONS.maxPages, 1, 500),
       maxConversations: clampPositiveInt(
         options.maxConversations,
         DEFAULT_RECEPTION_RUN_OPTIONS.maxConversations,
         1,
-        200,
+        10000,
       ),
       maxRuntimeMs: clampPositiveInt(
         options.maxRuntimeMs,
         DEFAULT_RECEPTION_RUN_OPTIONS.maxRuntimeMs,
         60_000,
-        1_800_000,
+        14_400_000,
       ),
       resetToFirstPage: options.resetToFirstPage === true,
       refreshCurrentQuery: options.refreshCurrentQuery === true,
+      autoDetectTotal: options.autoDetectTotal === true,
+      incrementalPages: clampPositiveInt(
+        options.incrementalPages,
+        DEFAULT_RECEPTION_RUN_OPTIONS.incrementalPages,
+        1,
+        100,
+      ),
+      stableTailRounds: clampPositiveInt(
+        options.stableTailRounds,
+        DEFAULT_RECEPTION_RUN_OPTIONS.stableTailRounds,
+        1,
+        10,
+      ),
     };
+  }
+
+  function normalizeReceptionRunMode(mode) {
+    return ["manual", "backfill_today", "incremental", "tail_check"].includes(mode) ? mode : "manual";
   }
 
   function syncReceptionRefreshSchedule(options = {}) {
@@ -669,7 +871,9 @@
     receptionRefreshTimer = setTimeout(() => {
       receptionRefreshTimer = null;
       receptionRefreshNextAt = "";
-      runReceptionRefreshCycle();
+      runReceptionRefreshCycle().catch(() => {
+        scheduleNextReceptionRefresh(receptionRefreshIntervalMs());
+      });
     }, delayMs);
   }
 
@@ -679,25 +883,48 @@
     receptionRefreshNextAt = "";
   }
 
-  function runReceptionRefreshCycle() {
+  async function runReceptionRefreshCycle() {
     if (!receptionAutoRefreshEnabled()) return;
     if (receptionCollectorJob && !receptionCollectorJob.done) {
       scheduleNextReceptionRefresh(receptionRefreshIntervalMs());
       return;
     }
-    startReceptionCollector({
-      maxPages: activeConfig.receptionMaxPages,
+    if (!hasReceptionChatlogSurface()) {
+      updateReceptionCollectorStatus({ lastAction: "等待进入聊天记录列表" });
+      scheduleNextReceptionRefresh(10_000);
+      return;
+    }
+
+    const options = await nextReceptionAutoRunOptions();
+    startReceptionCollector(options);
+  }
+
+  async function nextReceptionAutoRunOptions() {
+    const captureDate = localDateKey();
+    const dailyState = await readReceptionDailyState();
+    const needsBackfill =
+      activeConfig.receptionDailyFullCapture !== false &&
+      (dailyState.captureDate !== captureDate || dailyState.fullStatus !== "finished");
+    const mode = needsBackfill ? "backfill_today" : "incremental";
+    return {
+      mode,
+      captureDate,
+      maxPages:
+        mode === "backfill_today"
+          ? activeConfig.receptionMaxPages
+          : activeConfig.receptionIncrementalPages,
       maxConversations: activeConfig.receptionMaxConversations,
-      maxRuntimeMs: clampPositiveInt(
-        activeConfig.receptionMaxRuntimeMinutes,
-        DEFAULT_CONFIG.receptionMaxRuntimeMinutes,
-        1,
-        30,
-      ) * 60 * 1000,
+      maxRuntimeMs:
+        clampPositiveInt(activeConfig.receptionMaxRuntimeMinutes, DEFAULT_CONFIG.receptionMaxRuntimeMinutes, 1, 240) *
+        60 *
+        1000,
       autoRefreshRun: true,
       resetToFirstPage: true,
       refreshCurrentQuery: true,
-    });
+      autoDetectTotal: mode === "backfill_today",
+      incrementalPages: activeConfig.receptionIncrementalPages,
+      stableTailRounds: activeConfig.receptionStableTailRounds,
+    };
   }
 
   function receptionAutoRefreshEnabled() {
@@ -758,6 +985,13 @@
     const low = Math.min(min, max);
     const high = Math.max(min, max);
     return Math.floor(low + Math.random() * (high - low + 1));
+  }
+
+  function localDateKey(date = new Date()) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
   }
 
   function startRootWatcher() {

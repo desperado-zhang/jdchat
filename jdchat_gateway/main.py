@@ -13,11 +13,13 @@ from jdchat_gateway.media import cache_message_media, media_public_url
 from jdchat_gateway.models import CaptureBatchIn, CaptureRejected, CaptureResponse, HealthResponse
 from jdchat_gateway.normalize import normalize_capture_event
 from jdchat_gateway.reception import (
+    ReceptionCaptureJobProgressIn,
     ReceptionCaptureRejected,
     ReceptionCaptureResponse,
     ReceptionChatLogBatchIn,
     count_reception_chatlog_customers,
     count_reception_chatlog_sessions,
+    list_reception_capture_jobs,
     list_reception_chatlog_customer_messages,
     list_reception_chatlog_customers,
     list_reception_chatlog_events_recent,
@@ -26,6 +28,7 @@ from jdchat_gateway.reception import (
     normalize_reception_chatlog_event,
     reception_chatlog_stats,
     record_reception_chatlog_event,
+    upsert_reception_capture_job,
     upsert_reception_chatlog_message,
     upsert_reception_chatlog_session,
 )
@@ -387,6 +390,31 @@ def register_routes(app: FastAPI) -> FastAPI:
         conn = connect(settings.database_path)
         try:
             return reception_chatlog_stats(conn)
+        finally:
+            conn.close()
+
+    @app.post("/reception/chatlog/capture-jobs", dependencies=[Depends(require_local_token)])
+    def reception_chatlog_capture_job_progress(
+        progress: ReceptionCaptureJobProgressIn,
+        settings: Annotated[Settings, Depends(get_settings)],
+    ) -> dict[str, object]:
+        conn = connect(settings.database_path)
+        try:
+            with conn:
+                item = upsert_reception_capture_job(conn, progress)
+            return {"ok": True, "item": item}
+        finally:
+            conn.close()
+
+    @app.get("/reception/chatlog/capture-jobs", dependencies=[Depends(require_local_token)])
+    def reception_chatlog_capture_jobs(
+        settings: Annotated[Settings, Depends(get_settings)],
+        limit: int = 20,
+        capture_date: str | None = None,
+    ) -> dict[str, object]:
+        conn = connect(settings.database_path)
+        try:
+            return {"items": list_reception_capture_jobs(conn, min(max(limit, 1), 200), capture_date=capture_date)}
         finally:
             conn.close()
 
